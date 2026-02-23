@@ -17,6 +17,7 @@ class TokenResponse(BaseModel):
 
 class UserResponse(BaseModel):
     id: int
+    patient_uid: str | None = None
     email: str
     full_name: str | None
     role: str

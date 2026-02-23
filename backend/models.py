@@ -11,6 +11,7 @@ from database import Base
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
+    patient_uid = Column(String(10), unique=True, index=True)  # 5-char unique ID like Aadhar
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(255))

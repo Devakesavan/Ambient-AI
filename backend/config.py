@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     whisper_model: str = "base"  # "base"=faster, "small"=better Tamil/accuracy
     hf_token: str = ""  # HuggingFace token for pyannote speaker diarization
+    # Email (Microsoft Graph API — just paste access token from Graph Explorer)
+    ms_graph_access_token: str = ""  # Token from Graph Explorer (sender = admin's email from login)
 
     class Config:
         env_file = ".env"

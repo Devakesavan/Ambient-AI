@@ -20,7 +20,9 @@ from schemas import (
 )
 from ai_service import transcribe_audio, extract_clinical_info, generate_teach_back_questions, compute_understanding_score, compute_overall_understanding_score, generate_patient_report, translate_text, translate_batch, extract_answer_for_question, extract_all_teach_back_answers
 from storage import save_audio, save_transcript, save_medical_image, get_image_path, save_signature, get_signature_path
+from email_service import send_welcome_email
 from datetime import datetime
+import string, random
 
 
 @asynccontextmanager
@@ -29,12 +31,22 @@ async def lifespan(app: FastAPI):
     yield
 
 
+def _generate_patient_uid(db: Session) -> str:
+    """Generate a unique 5-character alphanumeric patient ID."""
+    chars = string.ascii_uppercase + string.digits
+    for _ in range(100):  # max retries
+        uid = ''.join(random.choices(chars, k=5))
+        if not db.query(User).filter(User.patient_uid == uid).first():
+            return uid
+    raise HTTPException(status_code=500, detail="Could not generate unique patient ID")
+
+
 app = FastAPI(title="Ambient AI Healthcare API", version="1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins.split(","), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 def user_to_response(u: User) -> UserResponse:
-    return UserResponse(id=u.id, email=u.email, full_name=u.full_name, role=u.role, phone=u.phone, address=u.address, preferred_language=u.preferred_language)
+    return UserResponse(id=u.id, patient_uid=u.patient_uid, email=u.email, full_name=u.full_name, role=u.role, phone=u.phone, address=u.address, preferred_language=u.preferred_language)
 
 
 @app.post("/auth/login", response_model=TokenResponse)
@@ -57,9 +69,10 @@ def list_patients(db: Session = Depends(get_db), _: User = Depends(RequireDoctor
 
 
 @app.post("/admin/patients", response_model=UserResponse)
-def create_patient(data: PatientCreate, db: Session = Depends(get_db), _: User = Depends(RequireAdmin)):
+def create_patient(data: PatientCreate, db: Session = Depends(get_db), admin: User = Depends(RequireAdmin)):
     if db.query(User).filter(User.email == data.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
+    patient_uid = _generate_patient_uid(db)
     user = User(
         email=data.email,
         hashed_password=hash_password(data.password),
@@ -68,10 +81,31 @@ def create_patient(data: PatientCreate, db: Session = Depends(get_db), _: User =
         phone=data.phone,
         address=data.address,
         preferred_language=data.preferred_language or "en",
+        patient_uid=patient_uid,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+    # Send welcome email with credentials (sender = admin's email)
+    print(f"[CreatePatient] Patient created: {user.full_name} ({user.email}), UID={patient_uid}")
+    print(f"[CreatePatient] Admin sender: {admin.email}")
+    print(f"[CreatePatient] Attempting to send welcome email...")
+    try:
+        send_welcome_email(
+            sender_email=admin.email,
+            to_email=user.email,
+            patient_name=user.full_name or "Patient",
+            patient_uid=patient_uid,
+            password=data.password,
+            phone=user.phone,
+            address=user.address,
+            language=user.preferred_language,
+        )
+        print(f"[CreatePatient] ✅ Email sent successfully")
+    except Exception as e:
+        print(f"[CreatePatient] ❌ Email FAILED: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
     return user_to_response(user)
 
 
