@@ -30,41 +30,6 @@ from config import settings
 
 _whisper_model = None
 _gemini_model = None
-_diarization_pipeline = None
-
-
-def _get_diarization_pipeline():
-    """Load pyannote speaker diarization pipeline (requires HF token)."""
-    global _diarization_pipeline
-    if _diarization_pipeline is None:
-        if not settings.hf_token:
-            print("[Diarization] No HF_TOKEN set - speaker diarization disabled")
-            return None
-        try:
-            from pyannote.audio import Pipeline
-            import torch
-            
-            print("\n" + "="*60)
-            print("       PYANNOTE SPEAKER DIARIZATION ENGINE")
-            print("="*60)
-            
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            print(f"  Device:     {device.type.upper()}")
-            print(f"  Status:     Loading diarization model...")
-            
-            _diarization_pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                token=settings.hf_token
-            )
-            _diarization_pipeline.to(device)
-            
-            print(f"  Status:     Model loaded successfully")
-            print("="*60 + "\n")
-        except Exception as e:
-            print(f"[Diarization] Failed to load pipeline: {e}")
-            print("[Diarization] Falling back to content-based speaker detection")
-            return None
-    return _diarization_pipeline
 
 
 def _use_gemini() -> bool:
@@ -269,106 +234,8 @@ Doctor: If symptoms persist beyond 5 days or you develop breathing difficulty, c
 Patient: Thank you doctor."""
 
 
-def run_diarization(audio_path: str) -> list:
-    """
-    Run speaker diarization on audio file.
-    Returns list of segments: [{"start": float, "end": float, "speaker": str}, ...]
-    """
-    pipeline = _get_diarization_pipeline()
-    if pipeline is None:
-        return []
-    
-    try:
-        print("[Diarization] Running speaker diarization...")
-        diarization = pipeline(audio_path)
-        
-        segments = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
-            segments.append({
-                "start": turn.start,
-                "end": turn.end,
-                "speaker": speaker
-            })
-        
-        print(f"[Diarization] Found {len(set(s['speaker'] for s in segments))} speakers, {len(segments)} segments")
-        return segments
-    except Exception as e:
-        print(f"[Diarization] Error: {e}")
-        return []
-
-
-def align_transcript_with_diarization(whisper_segments: list, diarization_segments: list) -> str:
-    """
-    Align Whisper word-level transcription with pyannote diarization.
-    Returns formatted transcript with speaker labels.
-    """
-    if not diarization_segments or not whisper_segments:
-        return ""
-    
-    # Get unique speakers and map to Doctor/Patient
-    speakers = list(dict.fromkeys(s["speaker"] for s in diarization_segments))
-    
-    # Assume first speaker is Doctor (typical in consultations)
-    speaker_map = {}
-    if len(speakers) >= 2:
-        speaker_map[speakers[0]] = "Doctor"
-        speaker_map[speakers[1]] = "Patient"
-        for i, spk in enumerate(speakers[2:], start=2):
-            speaker_map[spk] = f"Speaker {i+1}"
-    elif len(speakers) == 1:
-        speaker_map[speakers[0]] = "Doctor"
-    
-    print(f"[Diarization] Speaker mapping: {speaker_map}")
-    
-    # Align each Whisper segment with diarization
-    labeled_segments = []
-    for seg in whisper_segments:
-        seg_start = seg.get("start", 0)
-        seg_end = seg.get("end", seg_start + 0.1)
-        seg_mid = (seg_start + seg_end) / 2
-        text = seg.get("text", "").strip()
-        
-        if not text:
-            continue
-        
-        # Find overlapping diarization segment
-        best_speaker = None
-        best_overlap = 0
-        
-        for d_seg in diarization_segments:
-            overlap_start = max(seg_start, d_seg["start"])
-            overlap_end = min(seg_end, d_seg["end"])
-            overlap = max(0, overlap_end - overlap_start)
-            
-            if overlap > best_overlap:
-                best_overlap = overlap
-                best_speaker = d_seg["speaker"]
-        
-        # Fallback: use midpoint
-        if best_speaker is None:
-            for d_seg in diarization_segments:
-                if d_seg["start"] <= seg_mid <= d_seg["end"]:
-                    best_speaker = d_seg["speaker"]
-                    break
-        
-        speaker_label = speaker_map.get(best_speaker, "Unknown")
-        labeled_segments.append({"speaker": speaker_label, "text": text, "start": seg_start})
-    
-    # Merge consecutive segments from same speaker
-    merged = []
-    for seg in labeled_segments:
-        if merged and merged[-1]["speaker"] == seg["speaker"]:
-            merged[-1]["text"] += " " + seg["text"]
-        else:
-            merged.append(seg.copy())
-    
-    # Format output
-    lines = [f"{seg['speaker']}: {seg['text']}" for seg in merged]
-    return "\n".join(lines)
-
-
 def transcribe_audio(audio_bytes: bytes, consultation_id: int, filename: str = "recording.webm") -> str:
-    """Transcribe audio with speaker diarization using Whisper + pyannote."""
+    """Transcribe audio with auto-detect for English/Tamil/mixed using GPU-accelerated Whisper."""
     import time
     start_time = time.time()
     
@@ -397,61 +264,45 @@ def transcribe_audio(audio_bytes: bytes, consultation_id: int, filename: str = "
         try:
             # For longer audio (>30KB likely means >30 seconds), use better quality settings
             is_long_audio = len(audio_bytes) > 30000
-            beam = 5 if is_long_audio else 3
+            beam = 5 if is_long_audio else 3  # Better accuracy
             best_of = 3 if is_long_audio else 2
             
             print(f"  Mode:       {'Long Audio' if is_long_audio else 'Short Audio'} (beam={beam}, best_of={best_of})")
+            print(f"  Status:     Transcribing with GPU...")
             
-            # Run speaker diarization first (if available)
-            diarization_segments = run_diarization(tmp_path)
-            use_diarization = len(diarization_segments) > 0
-            
-            print(f"  Diarization: {'ENABLED' if use_diarization else 'DISABLED (using content analysis)'}")
-            print(f"  Status:     Transcribing...")
-            
-            # Transcribe with word timestamps for better diarization alignment
             result = model.transcribe(
                 tmp_path,
-                language=None,
+                language=None,  # Auto-detect (English, Tamil, or mixed)
                 verbose=False,
                 task="transcribe",
                 beam_size=beam,
                 best_of=best_of,
-                word_timestamps=use_diarization,  # Enable word timestamps for diarization
                 initial_prompt="Medical consultation between doctor and patient. Includes symptoms, diagnosis, medications, and follow-up instructions. May be in English, Tamil, or both. Capture all medical terms, drug names, dosages, and timing instructions accurately."
             )
-            
             raw_text = (result.get("text") or "").strip()
-            segments = result.get("segments", [])
             detected_lang = result.get("language", "unknown")
             
             elapsed = time.time() - start_time
             print(f"  Language:   {detected_lang.upper()}")
             print(f"  Duration:   {elapsed:.2f} seconds")
-            print(f"  Segments:   {len(segments)}")
             print(f"  Output:     {len(raw_text)} characters")
             print(f"{'='*60}")
+            print(f"\\n[Transcription Result]:")
+            print(f"{raw_text[:500]}{'...' if len(raw_text) > 500 else ''}")
+            print()
 
             if not raw_text:
                 print(f"[Transcribe] Empty result — audio may be silent or corrupt")
                 raise ValueError("Transcription returned empty result. The audio may be silent, too short, or in an unsupported format. Please try again.")
 
-            # Try diarization-based speaker labeling first
-            if use_diarization and segments:
-                print("[Transcribe] Aligning transcription with speaker diarization...")
-                diarized_text = align_transcript_with_diarization(segments, diarization_segments)
-                if diarized_text and "Doctor:" in diarized_text:
-                    print(f"\\n[Diarized Transcript]:\\n{diarized_text[:500]}{'...' if len(diarized_text) > 500 else ''}")
-                    return diarized_text
-
-            # Fallback: post-process Tamil if needed
+            # Optional: only post-process if transcript contains Tamil and looks garbled (saves time for English)
             has_tamil = any("\u0B80" <= c <= "\u0BFF" for c in raw_text)
             if has_tamil and _use_gemini():
                 cleaned_text = post_process_tamil_transcription(raw_text)
             else:
                 cleaned_text = raw_text
 
-            # Fallback: use Gemini for content-based speaker detection
+            # Format with speaker labels: use fast heuristic if no Gemini or already has labels
             if "Doctor:" in cleaned_text or "Patient:" in cleaned_text:
                 return cleaned_text
             if not _use_gemini():
@@ -548,39 +399,25 @@ def format_transcript_with_speakers_multilingual(raw_text: str) -> str:
     # Check if text contains Tamil
     has_tamil = any('\u0B80' <= char <= '\u0BFF' for char in raw_text)
     
-    prompt = f"""You are an expert at identifying speakers in a doctor-patient medical conversation transcript.
+    prompt = f"""You are formatting a doctor-patient conversation transcript. The conversation may be in English, Tamil, or a MIX of both languages (code-switching).
 
-SPEAKER IDENTIFICATION RULES - VERY IMPORTANT:
+CRITICAL INSTRUCTIONS:
+1. Identify who is speaking based on context:
+   - Medical questions, explanations, diagnoses, prescriptions = Doctor
+   - Symptoms, concerns, questions about treatment = Patient
+2. Format as: "Doctor: [statement]" or "Patient: [statement]"
+3. PRESERVE the original language - if someone speaks in Tamil, keep it in PROPER Tamil text (not phonetic); if English, keep English; if mixed, keep the mix
+4. Keep medical terminology exactly as spoken (preserve English medical terms even in Tamil sentences)
+5. Preserve the natural flow and language switching
+6. Each speaker's statement should be on a new line
+7. Do NOT translate - keep the transcript in the original languages used
+8. If Tamil text appears garbled or phonetic, convert it to proper Tamil script
+9. Ensure Tamil text is grammatically correct and meaningful
 
-DOCTOR typically says:
-- Greetings: "Good morning", "How are you feeling"
-- Questions about symptoms: "Any other symptoms?", "Have you had fever?", "Are you experiencing..."
-- Examination instructions: "Let me listen to your lungs", "Take a deep breath", "Open your mouth"
-- Findings: "I can hear crackling", "Your lungs sound...", "Based on your symptoms..."
-- Diagnosis: "You are diagnosed with...", "This appears to be...", "It looks like..."
-- Prescriptions: "I'm prescribing...", "I will prescribe...", "Take this medication..."
-- Instructions: "It's important that you...", "You must rest...", "Complete the full course"
-- Follow-up advice: "Come back if...", "If symptoms persist...", "Monitor your symptoms"
-- Reassurance: "With proper treatment...", "Most people recover well"
-
-PATIENT typically says:
-- Describing THEIR OWN symptoms: "I have been having...", "I feel...", "It started with...", "I'm bringing up..."
-- Confirming symptoms: "Yes, I've had fever", "Yes, I feel short of breath"
-- Expression of concern: "That sounds serious", "Should I be worried?"
-- Questions about treatment: "What treatment do I need?", "Do I need to be admitted?"
-- Questions about timeline: "When should I come back?", "How long will this take?"
-- Acknowledgment: "Okay doctor", "Thank you doctor", "I'll follow the instructions"
-
-CRITICAL: The transcript below is from a REAL conversation. Pay attention to:
-- Who is describing symptoms (that's the Patient)
-- Who is asking about symptoms (that's the Doctor)
-- Who is giving medical instructions (that's the Doctor)
-- Who is expressing personal health concerns (that's the Patient)
-
-Raw transcript to format:
+Raw transcript (may contain English, Tamil, or both):
 {raw_text[:5000]}
 
-Return ONLY the formatted transcript with "Doctor:" or "Patient:" labels. Each speaker turn on its own line. Do not add explanations."""
+Return the formatted transcript with proper speaker labels, preserving all languages exactly as spoken. Ensure Tamil text is in proper Tamil script, not phonetic transcription."""
     
     try:
         result = _gemini_generate(prompt)
@@ -623,51 +460,40 @@ def extract_clinical_info(transcript: str) -> Dict[str, str]:
     if not _use_gemini():
         return _extract_clinical_info_simple(transcript)
 
-    prompt = f"""You are analyzing a doctor-patient consultation transcript to extract structured clinical information.
+    prompt = f"""You are a highly skilled medical AI assistant analyzing a doctor-patient consultation transcript.
 
-CRITICAL FORMATTING RULES:
-- NEVER include "Doctor:" or "Patient:" prefixes in your output
-- Extract and REPHRASE information cleanly - do NOT copy dialogue verbatim
-- Each field should contain clean, professional medical summary text
+TASK: Create a CONCISE clinical summary from this conversation. Extract key medical information only.
 
-EXTRACTION GUIDELINES:
+OUTPUT REQUIREMENTS - BE BRIEF AND SPECIFIC:
 
-1. SYMPTOMS - What health problems the patient reports:
-   - List symptoms as comma-separated items: "fever, cough, headache, body ache"
-   - Include duration if mentioned: "fever for 3 days, persistent cough"
-   - NEVER include questions or dialogue
+1. SYMPTOMS: List patient's complaints in SHORT comma-separated format
+   - Example: "headache, fever, body ache, cough"
+   - Keep it under 50 characters if possible
 
-2. DIAGNOSIS - The medical condition identified:
-   - State ONLY the condition name: "viral flu", "upper respiratory infection", "bronchitis"
-   - If no clear diagnosis stated, write "Assessment pending" or leave empty
-   - NEVER include prescriptions or treatment here - ONLY the condition name
+2. DIAGNOSIS: State the doctor's diagnosis in ONE SHORT phrase
+   - Example: "viral flu" or "common cold" or "upper respiratory infection"
+   - Just the condition name, nothing else
 
-3. MEDICATIONS - Prescribed drugs and dosages:
-   - Format: "Drug Name Dosage - Instructions"
-   - Example: "Paracetamol 500mg - 1 tablet 3 times daily after food for 5 days"
-   - Include: inhalers, syrups, tablets with complete instructions
-   - If fluticasone/inhaler mentioned: "Fluticasone inhaler - as prescribed"
-   - NEVER include non-medication advice here
+3. MEDICATIONS: List prescription in BRIEF format
+   - Example: "Paracetamol 500mg - twice daily for 3 days"
+   - Include: drug name, dosage, frequency
+   - Keep each medicine on one line
 
-4. FOLLOW_UP - Return visit and warning instructions:
-   - When to return: "Follow up in 1 week"
-   - Warning signs: "Return immediately if breathing difficulty or high fever"
-   - Self-care advice: "Rest, stay hydrated"
-   - Recovery timeline: "Should feel better in a few days"
+4. FOLLOW_UP: Short instruction for patient
+   - Example: "Return if symptoms persist beyond 5 days"
+   - Keep it brief and actionable
 
-EXAMPLE OUTPUT:
-{{
-  "symptoms": "fever, cough, body ache for 3 days",
-  "diagnosis": "Viral upper respiratory infection",
-  "medications": "Fluticasone inhaler - 2 puffs twice daily\\nParacetamol 500mg - as needed for fever",
-  "follow_up": "Follow up in 1 week. Should feel better in a few days with medication and rest. Return immediately if breathing difficulty develops."
-}}
+CRITICAL RULES:
+- Be CONCISE - no long sentences or explanations
+- Extract ONLY what is explicitly mentioned
+- Do NOT start with "I will prescribe" or "Based on" - just state the facts
+- Use empty string "" if information is not mentioned
 
-Transcript to analyze:
+Transcript:
 {transcript[:8000]}
 
-Return ONLY a valid JSON object with keys: symptoms, diagnosis, medications, follow_up.
-No markdown, no explanations, just the JSON."""
+Return ONLY a valid JSON object with exactly these keys: symptoms, diagnosis, medications, follow_up.
+No markdown formatting, just the JSON object."""
     try:
         result = _gemini_generate(prompt)
         if result and result.strip():
@@ -736,22 +562,20 @@ def _extract_clinical_info_lenient(transcript: str) -> Dict[str, str]:
     if not _use_gemini():
         return _extract_clinical_info_simple(transcript)
     
-    prompt = f"""Extract medical information from this doctor-patient conversation.
+    prompt = f"""Analyze this doctor-patient conversation and create a BRIEF clinical summary.
 
-FORMATTING RULES:
-- NEVER include "Doctor:" or "Patient:" in output - extract clean information only
-- Rephrase and summarize - do NOT copy dialogue verbatim
+Extract in SHORT format:
+1. SYMPTOMS: Patient complaints (comma-separated, e.g., "headache, fever, cough")
+2. DIAGNOSIS: Doctor's diagnosis (just the condition name, e.g., "viral flu")
+3. MEDICATIONS: Prescriptions (drug, dose, frequency - keep brief)
+4. FOLLOW_UP: When to return/warning signs (one short sentence)
 
-Extract:
-1. SYMPTOMS: Patient complaints (list as: "fever, cough, headache")
-2. DIAGNOSIS: Medical condition name only (e.g., "viral flu", "bronchitis")
-3. MEDICATIONS: Drug names with dosage and instructions (e.g., "Paracetamol 500mg - 3 times daily")
-4. FOLLOW_UP: Return visit timing, warning signs, recovery advice
+IMPORTANT: Be CONCISE. No long explanations. Just key facts.
 
 Transcript:
 {transcript[:6000]}
 
-Return ONLY JSON with keys: symptoms, diagnosis, medications, follow_up. No explanations."""
+Return ONLY JSON with keys: symptoms, diagnosis, medications, follow_up"""
     try:
         result = _gemini_generate(prompt)
         if result and result.strip():
