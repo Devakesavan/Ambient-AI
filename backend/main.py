@@ -252,9 +252,14 @@ def upload_audio_endpoint(consultation_id: int, file: UploadFile = File(...), db
     if not c:
         raise HTTPException(status_code=404, detail="Consultation not found")
     audio_bytes = file.file.read()
+    if not audio_bytes or len(audio_bytes) < 100:
+        raise HTTPException(status_code=400, detail="Audio file is empty or too small. Please record or upload a valid audio file.")
     # Get file extension from uploaded filename for proper audio format handling
     filename = file.filename or "recording.webm"
-    text = transcribe_audio(audio_bytes, consultation_id, filename)
+    try:
+        text = transcribe_audio(audio_bytes, consultation_id, filename)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
     tr = db.query(Transcript).filter(Transcript.consultation_id == c.id).first()
     if tr:
         tr.content = text
@@ -312,7 +317,10 @@ def teach_back_answer_all_audio(consultation_id: int, file: UploadFile = File(..
     filename = file.filename or "teach-back-recording.webm"
     print(f"[Teach-Back] Processing audio file: {filename}, size: {len(audio_bytes)} bytes")
     
-    full_text = transcribe_audio(audio_bytes, consultation_id, filename)
+    try:
+        full_text = transcribe_audio(audio_bytes, consultation_id, filename)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=str(e))
     print(f"[Teach-Back] Full transcript:\n{full_text}\n")
     
     if not full_text or not full_text.strip():
