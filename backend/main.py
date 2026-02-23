@@ -17,7 +17,7 @@ from schemas import (
     LoginRequest, TokenResponse, UserResponse, PatientCreate, ConsultationCreate,
     ConsultationResponse, TranscriptResponse, ClinicalReportResponse, TeachBackItemResponse, PatientReportResponse,
 )
-from ai_service import transcribe_audio, extract_clinical_info, generate_teach_back_questions, compute_understanding_score, generate_patient_report, translate_text, translate_batch, extract_answer_for_question
+from ai_service import transcribe_audio, extract_clinical_info, generate_teach_back_questions, compute_understanding_score, generate_patient_report, translate_text, translate_batch, extract_answer_for_question, extract_all_teach_back_answers
 from storage import save_audio, save_transcript
 from datetime import datetime
 
@@ -252,7 +252,9 @@ def upload_audio_endpoint(consultation_id: int, file: UploadFile = File(...), db
     if not c:
         raise HTTPException(status_code=404, detail="Consultation not found")
     audio_bytes = file.file.read()
-    text = transcribe_audio(audio_bytes, consultation_id)
+    # Get file extension from uploaded filename for proper audio format handling
+    filename = file.filename or "recording.webm"
+    text = transcribe_audio(audio_bytes, consultation_id, filename)
     tr = db.query(Transcript).filter(Transcript.consultation_id == c.id).first()
     if tr:
         tr.content = text
@@ -302,17 +304,47 @@ def teach_back_answer_all_audio(consultation_id: int, file: UploadFile = File(..
     if not c:
         raise HTTPException(status_code=404, detail="Consultation not found")
     audio_bytes = file.file.read()
-    full_text = transcribe_audio(audio_bytes, consultation_id)
+    if not audio_bytes or len(audio_bytes) < 500:
+        raise HTTPException(
+            status_code=400,
+            detail="Recording too short or empty. Please record again (ask all questions, then stop)."
+        )
+    filename = file.filename or "teach-back-recording.webm"
+    print(f"[Teach-Back] Processing audio file: {filename}, size: {len(audio_bytes)} bytes")
+    
+    full_text = transcribe_audio(audio_bytes, consultation_id, filename)
+    print(f"[Teach-Back] Full transcript:\n{full_text}\n")
+    
+    if not full_text or not full_text.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Could not transcribe the recording. Please try again or upload an audio file."
+        )
     cr = db.query(ClinicalReport).filter(ClinicalReport.consultation_id == c.id).first()
     if not cr:
         raise HTTPException(status_code=400, detail="Clinical report not found. Please transcribe the consultation first.")
     correct_info = f"Symptoms: {cr.symptoms or ''}\nDiagnosis: {cr.diagnosis or ''}\nMedications: {cr.medications or ''}\nFollow-up: {cr.follow_up or ''}"
+    
+    # Build clinical report dict for context
+    clinical_report_dict = {
+        "symptoms": cr.symptoms or "",
+        "diagnosis": cr.diagnosis or "",
+        "medications": cr.medications or "",
+        "follow_up": cr.follow_up or ""
+    }
+
     items = db.query(TeachBackItem).filter(TeachBackItem.consultation_id == c.id).order_by(TeachBackItem.id).all()
-    for tb in items:
-        if tb.understanding_score is None:
-            specific_answer = extract_answer_for_question(tb.question or "", full_text)
-            tb.patient_answer = specific_answer
-            tb.understanding_score = compute_understanding_score(tb.question or "", specific_answer, correct_info)
+    questions = [tb.question or "" for tb in items]
+    
+    # Use batch extraction with clinical context for better accuracy
+    answers = extract_all_teach_back_answers(questions, full_text, clinical_report_dict)
+    print(f"[Teach-Back] Extracted answers: {answers}")
+    
+    for idx, tb in enumerate(items):
+        answer = answers[idx] if idx < len(answers) else ""
+        tb.patient_answer = answer or ""
+        tb.understanding_score = compute_understanding_score(tb.question or "", answer or "", correct_info)
+        print(f"[Teach-Back] Q{idx+1}: {tb.question[:50]}... -> A: {answer[:80] if answer else 'No answer'}... Score: {tb.understanding_score}")
     db.commit()
     return {"status": "ok"}
 

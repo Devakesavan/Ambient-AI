@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     storage_path: str = "./storage"
     gemini_api_key: str = ""
     whisper_model: str = "base"  # "base"=faster, "small"=better Tamil/accuracy
+    hf_token: str = ""  # HuggingFace token for pyannote speaker diarization
 
     class Config:
         env_file = ".env"

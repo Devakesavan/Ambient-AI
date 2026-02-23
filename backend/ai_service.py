@@ -9,6 +9,15 @@ import tempfile
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
+# Add FFmpeg from imageio-ffmpeg to PATH for Whisper
+try:
+    import imageio_ffmpeg
+    ffmpeg_path = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+    os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ.get("PATH", "")
+    print(f"[AI Service] FFmpeg added to PATH from: {ffmpeg_path}")
+except Exception as e:
+    print(f"[AI Service] Warning: Could not set FFmpeg path: {e}")
+
 from config import settings
 
 _whisper_model = None
@@ -23,9 +32,33 @@ def _get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         import whisper
-        # "base" = faster (good for English); "small" = better for Tamil (set in .env if needed)
-        model_name = getattr(settings, "whisper_model", "base") or "base"
-        _whisper_model = whisper.load_model(model_name)
+        import torch
+        
+        # Use "tiny" for fastest transcription with GPU
+        model_name = getattr(settings, "whisper_model", "tiny") or "tiny"
+        
+        # Check if CUDA is available for GPU acceleration
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        print("\n" + "="*60)
+        print("            WHISPER AI TRANSCRIPTION ENGINE")
+        print("="*60)
+        print(f"  Model:      {model_name.upper()}")
+        print(f"  Device:     {device.upper()}")
+        
+        if device == "cuda":
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            print(f"  GPU:        {gpu_name}")
+            print(f"  VRAM:       {gpu_mem:.1f} GB")
+            print(f"  Status:     GPU ACCELERATION ENABLED")
+        else:
+            print(f"  Status:     CPU MODE (No GPU detected)")
+        
+        print("="*60 + "\n")
+        
+        _whisper_model = whisper.load_model(model_name, device=device)
+        print(f"[Whisper] Model loaded successfully on {device.upper()}")
     return _whisper_model
 
 
@@ -193,26 +226,65 @@ Doctor: If symptoms persist beyond 5 days or you develop breathing difficulty, c
 Patient: Thank you doctor."""
 
 
-def transcribe_audio(audio_bytes: bytes, consultation_id: int) -> str:
-    """Transcribe audio with auto-detect for English/Tamil/mixed. Fast path: one pass, minimal post-processing."""
+def transcribe_audio(audio_bytes: bytes, consultation_id: int, filename: str = "recording.webm") -> str:
+    """Transcribe audio with auto-detect for English/Tamil/mixed using GPU-accelerated Whisper."""
+    import time
+    start_time = time.time()
+    
     try:
+        print(f"\\n{'='*60}")
+        print(f"  AUDIO TRANSCRIPTION - Consultation #{consultation_id}")
+        print(f"{'='*60}")
+        print(f"  File:       {filename}")
+        print(f"  Size:       {len(audio_bytes):,} bytes ({len(audio_bytes)/1024:.1f} KB)")
+        
         model = _get_whisper_model()
-        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+        
+        # Get file extension from filename, default to .webm
+        ext = os.path.splitext(filename)[1].lower() if filename else ".webm"
+        if not ext:
+            ext = ".webm"
+        # Map common extensions to ffmpeg-compatible formats
+        ext_map = {".mp3": ".mp3", ".wav": ".wav", ".webm": ".webm", ".ogg": ".ogg", ".m4a": ".m4a", ".flac": ".flac"}
+        suffix = ext_map.get(ext, ".webm")
+        print(f"  Format:     {suffix}")
+        
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
+        
         try:
-            # Single pass with auto-detect: correct for both English and Tamil, and faster (no Tamil-first retry)
+            # For longer audio (>30KB likely means >30 seconds), use better quality settings
+            is_long_audio = len(audio_bytes) > 30000
+            beam = 5 if is_long_audio else 3  # Better accuracy
+            best_of = 3 if is_long_audio else 2
+            
+            print(f"  Mode:       {'Long Audio' if is_long_audio else 'Short Audio'} (beam={beam}, best_of={best_of})")
+            print(f"  Status:     Transcribing with GPU...")
+            
             result = model.transcribe(
                 tmp_path,
-                language=None,  # Auto-detect (English, Tamil, or mixed) - fixes English not detecting
+                language=None,  # Auto-detect (English, Tamil, or mixed)
                 verbose=False,
                 task="transcribe",
-                beam_size=1,  # Faster decoding (default 5 is slower)
-                initial_prompt="Medical consultation between doctor and patient. May be in English, Tamil, or both. Preserve exact words spoken."
+                beam_size=beam,
+                best_of=best_of,
+                initial_prompt="Medical consultation between doctor and patient. Includes symptoms, diagnosis, medications, and follow-up instructions. May be in English, Tamil, or both. Capture all medical terms, drug names, dosages, and timing instructions accurately."
             )
             raw_text = (result.get("text") or "").strip()
+            detected_lang = result.get("language", "unknown")
+            
+            elapsed = time.time() - start_time
+            print(f"  Language:   {detected_lang.upper()}")
+            print(f"  Duration:   {elapsed:.2f} seconds")
+            print(f"  Output:     {len(raw_text)} characters")
+            print(f"{'='*60}")
+            print(f"\\n[Transcription Result]:")
+            print(f"{raw_text[:500]}{'...' if len(raw_text) > 500 else ''}")
+            print()
 
             if not raw_text:
+                print(f"[Transcribe] Empty result, returning mock transcript")
                 return MOCK_TRANSCRIPT.strip()
 
             # Optional: only post-process if transcript contains Tamil and looks garbled (saves time for English)
@@ -233,7 +305,10 @@ def transcribe_audio(audio_bytes: bytes, consultation_id: int) -> str:
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-    except Exception:
+    except Exception as e:
+        import traceback
+        print(f"[Transcribe] ERROR: {e}")
+        print(traceback.format_exc())
         return MOCK_TRANSCRIPT.strip()
 
 
@@ -367,41 +442,63 @@ EMPTY_CLINICAL_REPORT = {
 
 
 def extract_clinical_info(transcript: str) -> Dict[str, str]:
-    """Extract clinical information from the actual conversation. Extract what's present, avoid hallucination."""
+    """Extract clinical information from the actual conversation with high precision."""
     if not transcript or not transcript.strip():
         return EMPTY_CLINICAL_REPORT.copy()
+    
+    print(f"\n[Clinical Extraction] Processing transcript ({len(transcript)} chars)...")
     
     # If Gemini not available, try simple pattern-based extraction
     if not _use_gemini():
         return _extract_clinical_info_simple(transcript)
 
-    prompt = f"""Extract clinical information from this doctor-patient conversation transcript.
+    prompt = f"""You are a highly skilled medical AI assistant analyzing a doctor-patient consultation transcript.
 
-TASK: Analyze the conversation and extract medical information into a JSON format.
+TASK: Extract precise clinical information from this conversation into a structured JSON format.
 
-EXTRACTION RULES:
-1. Extract what is CLEARLY mentioned in the conversation
-2. For symptoms: What the PATIENT reports (pain, fever, cough, etc.)
-3. For diagnosis: What the DOCTOR diagnoses or assesses
-4. For medications: What the DOCTOR prescribes (drug name, dosage, frequency, timing)
-5. For follow_up: When to return, warning signs, or follow-up instructions from DOCTOR
-6. Output all information in English
+DETAILED EXTRACTION GUIDELINES:
 
-EXAMPLE:
-If transcript says: "Patient: I have headaches and fever. Doctor: This is viral flu. Take Paracetamol 500mg twice daily. Come back in a week."
-Then extract:
-{{
-  "symptoms": "Headaches, Fever",
-  "diagnosis": "Viral flu",
-  "medications": "Paracetamol 500mg, twice daily",
-  "follow_up": "Come back in a week"
-}}
+1. SYMPTOMS (What the patient complains about):
+   - Extract ALL symptoms mentioned by the patient
+   - Include: pain (location, type, duration), fever, cough, weakness, fatigue, nausea, etc.
+   - Format as comma-separated list: "headache, fever, body pain, cough"
+   - Be specific: "chest pain" not just "pain"
 
-Return ONLY a valid JSON object with these exact keys: symptoms, diagnosis, medications, follow_up.
-Use empty string "" only if that information is truly not mentioned in the conversation.
+2. DIAGNOSIS (Doctor's assessment/conclusion):
+   - Extract the doctor's medical diagnosis or assessment
+   - Include the condition name: "viral flu", "upper respiratory infection", "hypertension", etc.
+   - If doctor mentions multiple conditions, list all
+   - Do NOT include prescriptions here - only the diagnosis/condition
+
+3. MEDICATIONS (Doctor's prescriptions):
+   - Extract COMPLETE medication details:
+     * Drug name (exact spelling)
+     * Dosage (mg, ml, etc.)
+     * Frequency (once/twice/three times daily)
+     * Timing (before/after food, morning/night)
+     * Duration (for X days, until finished)
+   - Format: "Paracetamol 500mg - 2 tablets, 3 times daily after food for 5 days"
+   - List each medication on a new line if multiple
+
+4. FOLLOW_UP (Instructions for patient):
+   - When to return for next visit
+   - Warning signs to watch for
+   - Lifestyle advice (rest, fluids, diet)
+   - Emergency instructions (when to come immediately)
+   - Format clearly: "Follow up in 1 week. If symptoms worsen or breathing difficulty develops, come immediately."
+
+IMPORTANT RULES:
+- Extract ONLY what is explicitly mentioned in the conversation
+- Do NOT hallucinate or add information not present
+- Use empty string "" if information is truly not mentioned
+- Output in English even if conversation is in other language
+- Be thorough but accurate
 
 Transcript:
-{transcript[:6000]}"""
+{transcript[:8000]}
+
+Return ONLY a valid JSON object with exactly these keys: symptoms, diagnosis, medications, follow_up.
+No markdown formatting, just the JSON object."""
     try:
         result = _gemini_generate(prompt)
         if result and result.strip():
@@ -425,10 +522,33 @@ Transcript:
                 "medications": str(data.get("medications", "")).strip(),
                 "follow_up": str(data.get("follow_up", "")).strip()
             }
+
+            # If Gemini left some fields empty but others are present, run the more
+            # lenient extractor and use it to fill ONLY the missing pieces. This lets
+            # the AI infer likely diagnosis/medications/follow-up from context when
+            # the strict extractor was too conservative.
+            if any(not out[k] for k in ("symptoms", "diagnosis", "medications", "follow_up")):
+                try:
+                    alt = _extract_clinical_info_lenient(transcript)
+                    for key in ("symptoms", "diagnosis", "medications", "follow_up"):
+                        if not out.get(key) and alt.get(key):
+                            out[key] = alt[key]
+                except Exception:
+                    pass
             
-            # If all empty, try lenient extraction
+            # If everything is still empty, fall back fully to lenient extraction.
             if not any(out.values()):
                 return _extract_clinical_info_lenient(transcript)
+            
+            # Log extraction results
+            print(f"\\n{'='*60}")
+            print(f"  CLINICAL EXTRACTION RESULTS")
+            print(f"{'='*60}")
+            print(f"  Symptoms:    {out.get('symptoms', 'N/A')[:80]}")
+            print(f"  Diagnosis:   {out.get('diagnosis', 'N/A')[:80]}")
+            print(f"  Medications: {out.get('medications', 'N/A')[:80]}")
+            print(f"  Follow-up:   {out.get('follow_up', 'N/A')[:80]}")
+            print(f"{'='*60}\\n")
             
             return out
     except json.JSONDecodeError as e:
@@ -616,11 +736,134 @@ Return ONLY a JSON array of exactly 3 strings, e.g. ["Question 1?", "Question 2?
     return MOCK_TEACH_BACK_QUESTIONS.copy()
 
 
-def extract_answer_for_question(question: str, full_transcript: str) -> str:
-    """Extract the patient's specific answer, handling mixed Tamil-English."""
-    if not _use_gemini():
-        return full_transcript[:500]
+def extract_all_teach_back_answers(questions: List[str], full_transcript: str, original_clinical_report: Dict[str, str] = None) -> List[str]:
+    """Extract all teach-back answers with intelligent context matching."""
+    if not questions:
+        return []
     
+    print(f"\n[Teach-Back Extraction] Processing {len(questions)} questions...")
+    print(f"[Teach-Back Extraction] Transcript length: {len(full_transcript)} chars")
+    
+    if not _use_gemini():
+        # Fallback: split transcript by patient lines
+        patient_answers = []
+        for line in full_transcript.split("\n"):
+            if "patient:" in line.lower():
+                parts = line.split(":", 1)
+                answer = parts[1].strip() if len(parts) > 1 else line.strip()
+                if answer:
+                    patient_answers.append(answer)
+        # Pad with empty strings if needed
+        while len(patient_answers) < len(questions):
+            patient_answers.append("")
+        return patient_answers[:len(questions)]
+    
+    questions_formatted = "\n".join([f"Q{i+1}: {q}" for i, q in enumerate(questions)])
+    
+    # Include clinical report context for better matching
+    clinical_context = ""
+    if original_clinical_report:
+        clinical_context = f"""\n\nORIGINAL CLINICAL INFORMATION (for reference):
+- Symptoms: {original_clinical_report.get('symptoms', 'N/A')}
+- Diagnosis: {original_clinical_report.get('diagnosis', 'N/A')}
+- Medications: {original_clinical_report.get('medications', 'N/A')}
+- Follow-up: {original_clinical_report.get('follow_up', 'N/A')}"""
+    
+    prompt = f"""You are an intelligent medical AI analyzing a teach-back session where a doctor verifies patient understanding.
+
+TEACH-BACK QUESTIONS ASKED:
+{questions_formatted}
+{clinical_context}
+
+PATIENT'S RECORDED RESPONSES:
+{full_transcript[:6000]}
+
+TASK: Extract the patient's answer for EACH question with high precision.
+
+INTELLIGENT MATCHING RULES:
+
+1. CONTENT-BASED MATCHING (not just sequence):
+   - Match answers to questions based on CONTENT, not order
+   - If Q1 asks about medications, find where patient mentions medications/tablets/dosage
+   - If Q2 asks about follow-up, find where patient mentions timing/returning/appointments
+   - If Q3 asks about warning signs, find where patient mentions symptoms/emergency/danger signs
+
+2. MEDICATION QUESTIONS - Look for:
+   - Drug names (Paracetamol, Amoxicillin, etc.)
+   - Dosages (500mg, 2 tablets, etc.)
+   - Timing (after food, morning, night, twice daily, etc.)
+   - Duration (5 days, 1 week, etc.)
+
+3. FOLLOW-UP QUESTIONS - Look for:
+   - Time references (1 week, 5 days, Monday, etc.)
+   - Return instructions (come back, visit again, etc.)
+   - Appointment mentions
+
+4. WARNING SIGN QUESTIONS - Look for:
+   - Emergency symptoms (breathing difficulty, high fever, etc.)
+   - When to return immediately
+   - Danger indicators
+
+5. LANGUAGE HANDLING:
+   - Preserve original language (English, Tamil, or mixed)
+   - Do NOT translate the answers
+   - Understand meaning across languages for matching
+
+6. COMPLETE EXTRACTION:
+   - Extract the FULL answer, not just keywords
+   - Include all relevant parts of what patient said
+   - If patient gave a detailed response, capture it fully
+
+Return a JSON array with exactly {len(questions)} strings:
+["full answer to Q1", "full answer to Q2", "full answer to Q3"]
+
+If patient did not answer a specific question, use empty string "".
+Return ONLY the JSON array, no explanations."""
+
+    try:
+        result = _gemini_generate(prompt)
+        if result:
+            # Clean the response to extract JSON
+            result = result.strip()
+            if result.startswith("```"):
+                result = result.split("```")[1]
+                if result.startswith("json"):
+                    result = result[4:]
+            result = result.strip()
+            
+            data = json.loads(result)
+            if isinstance(data, list):
+                # Ensure we have the right number of answers
+                answers = [str(a).strip() if a else "" for a in data]
+                while len(answers) < len(questions):
+                    answers.append("")
+                
+                # Log extracted answers
+                print(f"\\n{'='*60}")
+                print(f"  TEACH-BACK ANSWERS EXTRACTED")
+                print(f"{'='*60}")
+                for i, (q, a) in enumerate(zip(questions, answers)):
+                    q_short = q[:50] + "..." if len(q) > 50 else q
+                    a_short = a[:60] + "..." if len(a) > 60 else a
+                    print(f"  Q{i+1}: {q_short}")
+                    print(f"  A{i+1}: {a_short if a else '(No answer)'}")
+                    print()
+                print(f"{'='*60}\\n")
+                
+                return answers[:len(questions)]
+    except Exception as e:
+        print(f"[extract_all_teach_back_answers] Error: {e}")
+    
+    # Fallback to sequential extraction
+    print("[extract_all_teach_back_answers] Falling back to individual extraction")
+    return [extract_answer_for_question(q, full_transcript) for q in questions]
+
+
+def extract_answer_for_question(question: str, full_transcript: str) -> str:
+    """Extract the patient's specific answer to this question only, handling mixed Tamil-English."""
+    if not _use_gemini():
+        return ""  # Avoid repeating full transcript for every question when AI is unavailable
+
     prompt = f"""You are analyzing a doctor-patient conversation transcript. The conversation may be in English, Tamil, or a MIX of both languages.
 
 DOCTOR'S QUESTION:
@@ -633,19 +876,20 @@ Extract ONLY the patient's direct answer to this specific question.
 
 CRITICAL INSTRUCTIONS:
 - Look for the patient's response (marked with "Patient:" or the patient's statement) that directly addresses this question
+- Include ONLY the answer to THIS question, not the whole conversation or answers to other questions
 - Include the complete answer, even if it spans multiple sentences
 - PRESERVE the original language - if patient answered in Tamil, keep Tamil; if English, keep English; if mixed (Tamil+English), keep the mix
 - Preserve medical terminology exactly as spoken (keep English medical terms even in Tamil answers)
 - Do NOT translate - extract the answer in the language(s) it was spoken
 
-Return ONLY the patient's answer text in the original language(s), nothing else. If the patient didn't answer this question, return "No answer provided"."""
+Return ONLY the patient's answer text for this question, nothing else. If the patient didn't answer this question, return "No answer provided"."""
     try:
         result = _gemini_generate(prompt)
         if result and result.strip() and "no answer" not in result.lower():
             return result.strip()[:800]  # Increased length for complete answers
     except Exception:
         pass
-    return full_transcript[:500]
+    return ""  # Do not repeat full transcript for every question on failure
 
 
 def compute_understanding_score(question: str, patient_answer: str, correct_info: str) -> int:

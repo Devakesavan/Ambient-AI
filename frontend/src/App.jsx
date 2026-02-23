@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './contexts/AuthContext'
+import Landing from './pages/Landing'
 import Login from './pages/Login'
 import DoctorDashboard from './pages/DoctorDashboard'
 import PatientDashboard from './pages/PatientDashboard'
@@ -28,11 +29,11 @@ function ProtectedRoute({ children, roles }) {
 export default function App() {
   return (
     <Routes>
+      <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/doctor/*" element={<ProtectedRoute roles={['doctor']}><Layout role="doctor"><DoctorDashboard /></Layout></ProtectedRoute>} />
       <Route path="/patient/*" element={<ProtectedRoute roles={['patient']}><Layout role="patient"><PatientDashboard /></Layout></ProtectedRoute>} />
       <Route path="/admin/*" element={<ProtectedRoute roles={['admin']}><Layout role="admin"><AdminDashboard /></Layout></ProtectedRoute>} />
-      <Route path="/" element={<Navigate to="/login" replace />} />
     </Routes>
   )
 }

@@ -72,8 +72,30 @@ export default function DoctorDashboard() {
     try {
       await uploadTeachBackAnswerAllAudio(currentConsultation.id, blob)
       setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
-    } catch (e) { setError(e.message) }
-    finally { setLoading(false) }
+    } catch (e) {
+      setError(e.message || 'Teach-back processing failed. Try recording again or upload an audio file.')
+    } finally { setLoading(false) }
+  }
+
+  const handleTeachBackFileUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file || !currentConsultation) return
+    const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/m4a', 'audio/x-m4a']
+    if (!validTypes.includes(file.type) && !file.name.match(/\.(wav|mp3|webm|ogg|m4a)$/i)) {
+      setError('Please upload a valid audio file (WAV, MP3, WebM, OGG, or M4A)')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      await uploadTeachBackAnswerAllAudio(currentConsultation.id, file)
+      setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
+    } catch (e) {
+      setError(e.message || 'Failed to process teach-back audio.')
+    } finally {
+      setLoading(false)
+      e.target.value = ''
+    }
   }
 
   const handleGenerateReport = async () => {
@@ -84,6 +106,31 @@ export default function DoctorDashboard() {
       setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
+  }
+
+  const handleAudioUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file || !currentConsultation) return
+    
+    // Validate file type
+    const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/m4a', 'audio/x-m4a']
+    if (!validTypes.includes(file.type) && !file.name.match(/\.(wav|mp3|webm|ogg|m4a)$/i)) {
+      setError('Please upload a valid audio file (WAV, MP3, WebM, OGG, or M4A)')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+    try {
+      await uploadAudio(currentConsultation.id, file)
+      setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
+    } catch (e) { 
+      setError(e.message) 
+    } finally { 
+      setLoading(false)
+      // Reset the file input
+      e.target.value = ''
+    }
   }
 
   const handleComplete = async () => {
@@ -150,9 +197,25 @@ export default function DoctorDashboard() {
                 <p className="text-slate-600 text-sm">Consultation #{currentConsultation.id} — Patient ID: {currentConsultation.patient_id}</p>
                 <div className="p-5 rounded-xl bg-slate-50 border border-slate-100">
                   <h3 className="font-semibold text-slate-800 mb-1">Ambient AI Recording</h3>
-                  <p className="text-sm text-slate-500 mb-4">Record the doctor-patient conversation, or use sample data for demo.</p>
+                  <p className="text-sm text-slate-500 mb-4">Record the doctor-patient conversation, upload an audio file, or use sample data for demo.</p>
                   <div className="flex gap-4 items-center flex-wrap">
                     <AudioRecorder onRecordingComplete={handleRecordingComplete} disabled={loading} />
+                    
+                    {/* Upload Audio Button */}
+                    <label className={`relative px-4 py-2.5 rounded-xl border-2 border-teal-300 bg-teal-50 text-teal-800 text-sm font-medium hover:bg-teal-100 cursor-pointer transition-all flex items-center gap-2 ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                      </svg>
+                      Upload Audio
+                      <input 
+                        type="file" 
+                        accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a"
+                        onChange={handleAudioUpload}
+                        disabled={loading}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                    </label>
+
                     <button onClick={async () => { setLoading(true); setError(''); try { await mockTranscribe(currentConsultation.id); setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage)); } catch (e) { setError(e.message); } finally { setLoading(false); } }} disabled={loading} className="px-4 py-2.5 rounded-xl border-2 border-accent-300 bg-accent-50 text-accent-800 text-sm font-medium hover:bg-accent-100">
                       Use Sample Data (Demo)
                     </button>
@@ -188,9 +251,18 @@ export default function DoctorDashboard() {
                         <button onClick={() => setRecordingTeachBack(false)} className="text-sm text-slate-500 hover:text-slate-700 w-fit">Cancel</button>
                       </div>
                     ) : (
-                      <button onClick={() => setRecordingTeachBack(true)} disabled={loading} className="px-5 py-2.5 rounded-xl bg-primary-600 text-white font-semibold hover:bg-primary-700 mb-4">
-                        Start Recording (Ask Questions After)
-                      </button>
+                      <div className="flex flex-wrap gap-3 items-center mb-4">
+                        <button onClick={() => setRecordingTeachBack(true)} disabled={loading} className="px-5 py-2.5 rounded-xl bg-primary-600 text-white font-semibold hover:bg-primary-700 disabled:opacity-50">
+                          Start Recording (Ask Questions After)
+                        </button>
+                        <label className={`relative px-4 py-2.5 rounded-xl border-2 border-teal-300 bg-teal-50 text-teal-800 text-sm font-medium hover:bg-teal-100 cursor-pointer transition-all flex items-center gap-2 ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                          </svg>
+                          Upload teach-back audio
+                          <input type="file" accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a" onChange={handleTeachBackFileUpload} disabled={loading} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                        </label>
+                      </div>
                     )}
                     {(() => {
                       const scores = currentConsultation.teach_back_items.filter((tb) => tb.understanding_score != null).map((tb) => tb.understanding_score)
@@ -207,13 +279,11 @@ export default function DoctorDashboard() {
                             {currentConsultation.teach_back_items.map((tb) => (
                               <div key={tb.id} className="p-4 rounded-xl bg-white border border-accent-100">
                                 <p className="font-medium text-slate-800">{tb.question}</p>
-                                {tb.understanding_score != null && (
-                                  <div className="mt-2 flex flex-wrap gap-2">
-                                    <span className="text-slate-600">Score:</span>
-                                    <span className={`font-bold ${tb.understanding_score >= 80 ? 'text-green-600' : 'text-accent-600'}`}>{tb.understanding_score}/100</span>
-                                    {tb.understanding_score < 80 && <span className="text-accent-700 text-sm">— Doctor should clarify</span>}
-                                    {tb.patient_answer && <span className="text-slate-500 text-sm w-full block mt-1">Patient: &quot;{tb.patient_answer}&quot;</span>}
-                                  </div>
+                                {tb.patient_answer != null && tb.patient_answer !== '' && (
+                                  <p className="mt-2 text-slate-600 text-sm">
+                                    <span className="font-medium text-slate-700">Patient: </span>
+                                    {tb.patient_answer}
+                                  </p>
                                 )}
                               </div>
                             ))}

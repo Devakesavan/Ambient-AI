@@ -16,9 +16,14 @@ export default function AudioRecorder({ onRecordingComplete, disabled }) {
       mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data) }
       mediaRecorder.onstop = () => {
         stream.getTracks().forEach((t) => t.stop())
-        if (chunksRef.current.length > 0) onRecordingComplete?.(new Blob(chunksRef.current, { type: 'audio/webm' }))
+        if (chunksRef.current.length === 0) {
+          setError('No audio captured. Please try again and allow microphone access.')
+          return
+        }
+        onRecordingComplete?.(new Blob(chunksRef.current, { type: 'audio/webm' }))
       }
-      mediaRecorder.start()
+      // Request data every 1s so browsers flush chunks reliably (avoids empty recording on stop)
+      mediaRecorder.start(1000)
       setIsRecording(true)
     } catch (err) {
       setError('Microphone access denied or unavailable')

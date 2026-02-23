@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ambient AI — Medical Intelligence</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@300;400;600&display=swap');
+
+  :root {
+    --green: #00FF88;
+    --green-dim: #00cc6a;
+    --bg: #0A0A0A;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: 'Rajdhani', sans-serif;
+    color: #fff;
+  }
+
+  canvas {
+    position: fixed; inset: 0;
+    pointer-events: none;
+  }
+  #particleCanvas { z-index: 1; }
+  #medCanvas      { z-index: 2; }
+  #dnaCanvas      { z-index: 3; }
+
+  .bg-glow {
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(ellipse 55% 45% at 50% 52%, rgba(0,255,136,0.06) 0%, transparent 68%),
+      radial-gradient(ellipse 25% 25% at 15% 85%,  rgba(0,255,136,0.035) 0%, transparent 60%),
+      radial-gradient(ellipse 20% 20% at 85% 15%,  rgba(0,255,136,0.03)  0%, transparent 55%);
+    pointer-events: none;
+  }
+
+  #screen1 {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+
+  .title-wrap {
+    position: relative; z-index: 2;
+    text-align: center;
+    opacity: 0;
+    transform: translateY(14px);
+    transition: opacity 0.7s ease, transform 0.7s ease;
+  }
+  .title-wrap.visible { opacity: 1; transform: translateY(0); }
+
+  .eyebrow {
+    font-size: clamp(10px, 1.4vw, 13px);
+    letter-spacing: 0.55em;
+    color: var(--green-dim);
+    text-transform: uppercase;
+    font-weight: 300;
+    opacity: 0;
+    margin-bottom: 16px;
+    display: block;
+    animation: fadeIn 0.7s ease 0.1s forwards;
+  }
+
+  .brand-title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(68px, 13vw, 148px);
+    letter-spacing: 0.13em;
+    line-height: 1;
+    color: #fff;
+    text-shadow:
+      0 0 28px rgba(0,255,136,0.65),
+      0 0 70px rgba(0,255,136,0.22),
+      0 8px 28px rgba(0,0,0,0.85);
+    position: relative;
+    display: inline-block;
+    overflow: hidden;
+    cursor: default;
+  }
+
+  /* ══════════════════════════════════════════
+     IRIS IGNITION — original title animation
+     The text lives collapsed to a 1px slit at
+     its vertical centre, then "tears open"
+     simultaneously top & bottom with a bright
+     bloom. No letter-by-letter — one unified
+     cinematic moment.
+  ══════════════════════════════════════════ */
+
+  /* 1. Title sits invisible, collapsed to centre slit */
+  .brand-title {
+    clip-path: inset(50% 0 50% 0);
+    filter: brightness(4) blur(3px);
+  }
+
+  /* 2. Ignition class fires the iris open */
+  .brand-title.ignite {
+    animation: irisOpen 0.72s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+  @keyframes irisOpen {
+    0%   { clip-path: inset(50% 0 50% 0);   filter: brightness(5) blur(4px);  }
+    18%  { clip-path: inset(38% 0 38% 0);   filter: brightness(8) blur(1px);  }
+    42%  { clip-path: inset(5%  0 5%  0);   filter: brightness(3) blur(0px);  }
+    62%  { clip-path: inset(-2% 0 -2% 0);   filter: brightness(1.6) blur(0);  }
+    78%  { clip-path: inset(1%  0 1%  0);   filter: brightness(1.2) blur(0);  }
+    100% { clip-path: inset(0%  0 0%  0);   filter: brightness(1)   blur(0);  }
+  }
+
+  /* 3. After ignition, glow breathes */
+  .brand-title.settled {
+    animation: glowBreathe 3s ease-in-out 0.1s infinite alternate;
+  }
+  @keyframes glowBreathe {
+    0%   { text-shadow: 0 0 28px rgba(0,255,136,0.65), 0 0 70px rgba(0,255,136,0.22), 0 8px 28px rgba(0,0,0,0.85); }
+    100% { text-shadow: 0 0 40px rgba(0,255,136,0.90), 0 0 110px rgba(0,255,136,0.38), 0 8px 28px rgba(0,0,0,0.85); }
+  }
+
+  /* 4. Bloom overlay — the white-green flare canvas */
+  #bloomCanvas {
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 15;
+  }
+
+  /* 5. Subtitle slides up after ignition */
+  .subtitle {
+    font-size: clamp(11px, 1.6vw, 14px);
+    letter-spacing: 0.42em;
+    color: rgba(0,255,136,0.6);
+    text-transform: uppercase;
+    font-weight: 300;
+    margin-top: 14px;
+    opacity: 0;
+    display: block;
+  }
+  .subtitle.show {
+    animation: subtitleRise 1s cubic-bezier(0.22,1,0.36,1) forwards;
+  }
+  @keyframes subtitleRise {
+    0%   { opacity: 0; transform: translateY(10px); letter-spacing: 0.7em; }
+    100% { opacity: 1; transform: translateY(0);    letter-spacing: 0.42em; }
+  }
+
+  @keyframes fadeIn { to { opacity: 1; } }
+
+  /* 6. Rule expands after ignition */
+  .title-rule {
+    width: 0; height: 1px;
+    margin: 18px auto 0;
+    background: linear-gradient(to right, transparent, var(--green), transparent);
+    opacity: 0;
+  }
+  .title-rule.show {
+    animation: ruleExpand 0.9s cubic-bezier(0.22,1,0.36,1) forwards;
+  }
+  @keyframes ruleExpand {
+    to { width: 80px; opacity: 1; }
+  }
+
+  /* 7. Button materialises */
+  .cta-btn {
+    margin-top: 52px;
+    padding: 17px 58px;
+    border: 1.5px solid var(--green);
+    border-radius: 50px;
+    background: transparent;
+    color: var(--green);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: color 0.32s ease, box-shadow 0.32s ease;
+    opacity: 0;
+    box-shadow: 0 0 20px rgba(0,255,136,0.1);
+    display: inline-block;
+  }
+  .cta-btn.show {
+    animation: btnMaterialise 1s cubic-bezier(0.22,1,0.36,1) forwards;
+  }
+  @keyframes btnMaterialise {
+    0%   { opacity: 0; transform: translateY(18px) scale(0.92); filter: blur(6px); }
+    100% { opacity: 1; transform: translateY(0) scale(1);        filter: blur(0);   }
+  }
+  .cta-btn::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: var(--green);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.38s cubic-bezier(0.76,0,0.24,1);
+    border-radius: inherit;
+  }
+  .cta-btn:hover::before { transform: scaleX(1); }
+  .cta-btn:hover {
+    color: #0A0A0A;
+    box-shadow: 0 0 44px rgba(0,255,136,0.55), 0 0 90px rgba(0,255,136,0.18);
+  }
+  .cta-btn span { position: relative; z-index: 1; }
+
+  /* 8. Exit transition when handing over to the app */
+  .fade-to-app {
+    pointer-events: none;
+    animation: fadeOutToApp 0.7s ease forwards;
+  }
+  @keyframes fadeOutToApp {
+    to {
+      opacity: 0;
+      transform: scale(1.02);
+      filter: blur(2px);
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="bg-glow"></div>
+<canvas id="particleCanvas"></canvas>
+<canvas id="medCanvas"></canvas>
+<canvas id="dnaCanvas"></canvas>
+<canvas id="burstCanvas" style="position:fixed;inset:0;pointer-events:none;z-index:11;"></canvas>
+<canvas id="bloomCanvas"></canvas>
+
+<div id="screen1">
+  <div class="title-wrap" id="titleWrap">
+    <span class="eyebrow">Medical Artificial Intelligence</span>
+    <div class="brand-title" id="brandTitle">AMBIENT AI</div>
+    <div class="title-rule" id="titleRule"></div>
+    <span class="subtitle" id="titleSub">Diagnose &nbsp;·&nbsp; Predict &nbsp;·&nbsp; Heal</span>
+    <br>
+    <button class="cta-btn" id="ctaBtn"><span>Get Started</span></button>
+  </div>
+</div>
+
+<script>
+/* ─── 1. PARTICLE MESH ─── */
+(function () {
+  const cv = document.getElementById('particleCanvas');
+  const cx = cv.getContext('2d');
+  let W, H;
+  const pts = [];
+  function resize() { W = cv.width = innerWidth; H = cv.height = innerHeight; }
+  resize(); addEventListener('resize', resize);
+
+  for (let i = 0; i < 75; i++) pts.push({
+    x: Math.random() * innerWidth, y: Math.random() * innerHeight,
+    r: Math.random() * 1.1 + 0.2,
+    vx: (Math.random() - 0.5) * 0.15, vy: (Math.random() - 0.5) * 0.15,
+    a: Math.random() * 0.3 + 0.06
+  });
+
+  (function loop() {
+    cx.clearRect(0, 0, W, H);
+    pts.forEach(p => {
+      p.x = (p.x + p.vx + W) % W; p.y = (p.y + p.vy + H) % H;
+      cx.beginPath(); cx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      cx.fillStyle = `rgba(0,255,136,${p.a})`; cx.fill();
+    });
+    for (let i = 0; i < pts.length; i++)
+      for (let j = i + 1; j < pts.length; j++) {
+        const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
+        const d = Math.sqrt(dx*dx + dy*dy);
+        if (d < 90) {
+          cx.beginPath(); cx.moveTo(pts[i].x, pts[i].y); cx.lineTo(pts[j].x, pts[j].y);
+          cx.strokeStyle = `rgba(0,255,136,${0.05 * (1 - d/90)})`; cx.lineWidth = 0.5; cx.stroke();
+        }
+      }
+    requestAnimationFrame(loop);
+  })();
+})();
+
+/* ─── 2. MEDICAL ICON FLOATERS ─── */
+(function () {
+  const cv = document.getElementById('medCanvas');
+  const cx = cv.getContext('2d');
+  let W, H;
+  function resize() { W = cv.width = innerWidth; H = cv.height = innerHeight; }
+  resize(); addEventListener('resize', resize);
+
+  // ── ICON DRAW FUNCTIONS ──
+
+  function drawPill(c, s) {
+    const w = s*2.1, h = s*0.85, r = h/2;
+    c.beginPath();
+    c.moveTo(-w/2+r, -h/2); c.arcTo(w/2,-h/2,w/2,h/2,r);
+    c.arcTo(w/2,h/2,-w/2,h/2,r); c.arcTo(-w/2,h/2,-w/2,-h/2,r);
+    c.arcTo(-w/2,-h/2,w/2,-h/2,r); c.closePath(); c.stroke();
+    c.beginPath(); c.moveTo(0,-h/2); c.lineTo(0,h/2); c.stroke();
+    [[-w/4,0],[w/4,0]].forEach(([x,y])=>{
+      c.beginPath(); c.arc(x,y,s*0.09,0,Math.PI*2); c.fill();
+    });
+  }
+
+  function drawSyringe(c, s) {
+    const bw=s*2.6, bh=s*0.55;
+    c.beginPath(); c.rect(-bw*0.35,-bh/2,bw*0.7,bh); c.stroke();
+    c.beginPath(); c.rect(-bw*0.35-s*0.16,-bh*0.72,s*0.1,bh*1.44); c.stroke();
+    const ow = c.lineWidth; c.lineWidth = ow*0.55;
+    c.beginPath(); c.moveTo(-bw*0.35,0); c.lineTo(-bw*0.35+bw*0.28,0); c.stroke();
+    c.lineWidth = ow;
+    c.beginPath(); c.moveTo(bw*0.35,-bh/2); c.lineTo(bw*0.35,bh/2);
+    c.lineTo(bw*0.35+s*0.65,0); c.closePath(); c.stroke();
+    c.beginPath(); c.moveTo(bw*0.35+s*0.65,0); c.lineTo(bw*0.35+s*1.05,0); c.stroke();
+    for(let i=1;i<=3;i++){
+      const tx=-bw*0.35+(bw*0.7/4)*i;
+      c.beginPath(); c.moveTo(tx,-bh/2); c.lineTo(tx,-bh*0.72); c.stroke();
+    }
+  }
+
+  function drawStethoscope(c, s) {
+    const arm=s*1.0, th=s*0.26;
+    c.beginPath(); c.rect(-th/2,-arm,th,arm*1.75); c.stroke();
+    c.beginPath(); c.rect(-arm,-th/2,arm*2,th); c.stroke();
+    c.beginPath(); c.arc(0,arm*0.82,s*0.35,0,Math.PI*2); c.stroke();
+    [[-arm*0.5,-arm*0.74],[arm*0.5,-arm*0.74]].forEach(([x,y])=>{
+      c.beginPath(); c.arc(x,y,s*0.13,0,Math.PI*2); c.stroke();
+    });
+  }
+
+  function drawTablet(c, s) {
+    const w=s*1.1,h=s*1.6,r=s*0.3;
+    c.beginPath(); c.moveTo(-w/2+r,-h/2); c.arcTo(w/2,-h/2,w/2,h/2,r);
+    c.arcTo(w/2,h/2,-w/2,h/2,r); c.arcTo(-w/2,h/2,-w/2,-h/2,r);
+    c.arcTo(-w/2,-h/2,w/2,-h/2,r); c.closePath(); c.stroke();
+    c.beginPath(); c.moveTo(-w/2+r,0); c.lineTo(w/2-r,0); c.stroke();
+    c.beginPath(); c.arc(0,0,s*0.11,0,Math.PI*2); c.fill();
+  }
+
+  const TYPES = ['pill','syringe','stethoscope','tablet'];
+
+  // 4 diagonal lanes: TL→BR, TR→BL, BL→TR, BR→TL
+  const LANES = [
+    { startFn: (i) => ({ x: -100, y: -100 + i*80 }),   vx:  0.32, vy:  0.32 },
+    { startFn: (i) => ({ x: innerWidth+100, y:-80+i*90 }),vx:-0.32, vy:  0.30 },
+    { startFn: (i) => ({ x: -100, y: innerHeight+80 }),   vx:  0.30, vy: -0.32 },
+    { startFn: (i) => ({ x: innerWidth+100, y:innerHeight+80 }), vx:-0.30, vy:-0.30 },
+  ];
+
+  const floaters = [];
+  for (let i = 0; i < 14; i++) {
+    const lane = LANES[i % LANES.length];
+    const sp = lane.startFn(Math.floor(i / LANES.length));
+    const speed = 0.3 + Math.random() * 0.2;
+    const mag = Math.sqrt(lane.vx**2 + lane.vy**2);
+    floaters.push({
+      type: TYPES[i % TYPES.length],
+      x: sp.x - lane.vx * (i % 4) * 220,
+      y: sp.y - lane.vy * (i % 4) * 220,
+      vx: (lane.vx / mag) * speed,
+      vy: (lane.vy / mag) * speed,
+      size: 13 + Math.random() * 13,
+      alpha: 0.10 + Math.random() * 0.14,
+      rot: Math.random() * Math.PI * 2,
+      spin: (Math.random() - 0.5) * 0.005,
+      laneIdx: i % LANES.length,
+      laneSlot: Math.floor(i / LANES.length)
+    });
+  }
+
+  function offscreen(f) {
+    return f.x < -180 || f.x > W+180 || f.y < -180 || f.y > H+180;
+  }
+
+  function respawn(f) {
+    const lane = LANES[f.laneIdx];
+    const sp = lane.startFn(f.laneSlot);
+    const speed = 0.3 + Math.random() * 0.18;
+    const mag = Math.sqrt(lane.vx**2 + lane.vy**2);
+    f.x = sp.x; f.y = sp.y;
+    f.vx = (lane.vx/mag)*speed; f.vy = (lane.vy/mag)*speed;
+    f.type = TYPES[Math.floor(Math.random()*TYPES.length)];
+    f.size = 13 + Math.random()*13;
+    f.alpha = 0.10 + Math.random()*0.14;
+    f.rot = Math.random()*Math.PI*2;
+  }
+
+  (function loop() {
+    cx.clearRect(0, 0, W, H);
+    floaters.forEach(f => {
+      f.x += f.vx; f.y += f.vy; f.rot += f.spin;
+      if (offscreen(f)) respawn(f);
+
+      cx.save();
+      cx.translate(f.x, f.y); cx.rotate(f.rot);
+      cx.globalAlpha = f.alpha;
+      cx.strokeStyle = '#00FF88'; cx.fillStyle = '#00FF88';
+      cx.lineWidth = 1.25; cx.shadowColor = '#00FF88'; cx.shadowBlur = 11;
+
+      if      (f.type === 'pill')        drawPill(cx, f.size);
+      else if (f.type === 'syringe')     drawSyringe(cx, f.size);
+      else if (f.type === 'stethoscope') drawStethoscope(cx, f.size);
+      else if (f.type === 'tablet')      drawTablet(cx, f.size);
+
+      cx.restore();
+    });
+    requestAnimationFrame(loop);
+  })();
+})();
+
+/* ─── 3. ONE BIG THICK DNA HELIX ─── */
+(function () {
+  const cv = document.getElementById('dnaCanvas');
+  const cx = cv.getContext('2d');
+  let W, H;
+  function resize() { W = cv.width = innerWidth; H = cv.height = innerHeight; }
+  resize(); addEventListener('resize', resize);
+
+  let t = 0, phase = 'intro', fadeStart = null, dnaAlpha = 1;
+  const DNA_SHOW = 3000, startTime = performance.now();
+
+  (function frame(ts) {
+    cx.clearRect(0, 0, W, H);
+    const elapsed = ts - startTime;
+
+    if (phase === 'intro' && elapsed > DNA_SHOW) { phase = 'fading'; fadeStart = ts; }
+    if (phase === 'fading') {
+      dnaAlpha = Math.max(0, 1 - (ts - fadeStart) / 700);
+      if (dnaAlpha <= 0) { phase = 'done'; revealTitle(); }
+    }
+
+    if (phase === 'done') { requestAnimationFrame(frame); t += 0.022; return; }
+
+    t += 0.022;
+
+    // ── Single massive diagonal DNA ──
+    cx.save();
+    cx.globalAlpha = dnaAlpha;
+    cx.translate(W / 2, H / 2);
+    cx.rotate(Math.PI / 4);
+
+    const len  = Math.max(W, H) * 0.80;   // extra long — bleeds off screen
+    const segs = 38;
+    const step = (len * 2) / segs;
+    const amp  = 62;                        // wide amplitude
+    const lw   = 4.5;                       // thick strands
+    const nr   = 5.0;                       // large nodes
+
+    cx.shadowColor = '#00FF88';
+
+    // Two backbone strands
+    for (const side of [1, -1]) {
+      for (let i = 0; i < segs; i++) {
+        const z0 = -len + i * step, z1 = z0 + step;
+        const w0 = Math.sin(i * 0.42 + t) * amp;
+        const w1 = Math.sin((i + 1) * 0.42 + t) * amp;
+        const depth = Math.sin(i * 0.42 + t);
+        const a = side === 1
+          ? (depth > 0 ? 1.0 : 0.20)
+          : (depth < 0 ? 1.0 : 0.20);
+
+        // outer glow pass
+        cx.beginPath(); cx.moveTo(side * w0, z0); cx.lineTo(side * w1, z1);
+        cx.strokeStyle = `rgba(0,255,136,${a * 0.35})`;
+        cx.lineWidth = lw + 8; cx.shadowBlur = 30; cx.stroke();
+
+        // core strand
+        cx.beginPath(); cx.moveTo(side * w0, z0); cx.lineTo(side * w1, z1);
+        cx.strokeStyle = `rgba(0,255,136,${a})`;
+        cx.lineWidth = lw; cx.shadowBlur = 20; cx.stroke();
+      }
+    }
+
+    // Rungs (cross-bars)
+    for (let i = 0; i <= segs; i++) {
+      const z = -len + i * step;
+      const w = Math.sin(i * 0.42 + t) * amp;
+      const depth = Math.sin(i * 0.42 + t);
+      const show = Math.abs(depth) < 0.60;
+      if (show) {
+        const ra = (0.75 - Math.abs(depth) * 0.55);
+        // rung glow
+        cx.beginPath(); cx.moveTo(-w, z); cx.lineTo(w, z);
+        cx.strokeStyle = `rgba(0,255,136,${ra * 0.4})`;
+        cx.lineWidth = 5; cx.shadowBlur = 14; cx.stroke();
+        // rung core
+        cx.beginPath(); cx.moveTo(-w, z); cx.lineTo(w, z);
+        cx.strokeStyle = `rgba(0,255,136,${ra})`;
+        cx.lineWidth = 2.2; cx.shadowBlur = 8; cx.stroke();
+      }
+
+      // Nodes on each strand
+      for (const sign of [1, -1]) {
+        // outer glow ring
+        cx.beginPath(); cx.arc(sign * w, z, nr + 4, 0, Math.PI * 2);
+        cx.fillStyle = `rgba(0,255,136,0.12)`; cx.shadowBlur = 22; cx.fill();
+        // bright core node
+        cx.beginPath(); cx.arc(sign * w, z, nr, 0, Math.PI * 2);
+        cx.fillStyle = `rgba(0,255,136,0.95)`; cx.shadowBlur = 18; cx.fill();
+        // hot white center
+        cx.beginPath(); cx.arc(sign * w, z, nr * 0.4, 0, Math.PI * 2);
+        cx.fillStyle = `rgba(180,255,220,0.9)`; cx.shadowBlur = 10; cx.fill();
+      }
+    }
+
+    cx.restore();
+    requestAnimationFrame(frame);
+  })(performance.now());
+
+  setTimeout(revealTitle, DNA_SHOW + 760);
+})();
+
+/* ─── 4. IRIS IGNITION REVEAL ─── */
+let titleRevealed = false;
+function revealTitle() {
+  if (titleRevealed) return;
+  titleRevealed = true;
+
+  const wrap     = document.getElementById('titleWrap');
+  const titleEl  = document.getElementById('brandTitle');
+  const rule     = document.getElementById('titleRule');
+  const sub      = document.getElementById('titleSub');
+  const btn      = document.getElementById('ctaBtn');
+
+  // ─── Phase 0: Show the wrap (it was opacity:0) ───
+  wrap.classList.add('visible');
+
+  // ─── Phase 1: Bloom canvas — white-green radial flare ───
+  const bc = document.getElementById('bloomCanvas');
+  bc.width = innerWidth; bc.height = innerHeight;
+  const bx = bc.getContext('2d');
+  const CX = innerWidth / 2, CY = innerHeight / 2;
+
+  let bloomFrame = 0;
+  const BLOOM_PEAK = 12;   // frame of max brightness
+  const BLOOM_END  = 55;   // frame bloom is fully gone
+
+  (function bloomLoop() {
+    bx.clearRect(0, 0, bc.width, bc.height);
+
+    const t = bloomFrame;
+    if (t <= BLOOM_END) {
+      // alpha: ramp up to peak, then decay
+      const peakA = t <= BLOOM_PEAK
+        ? t / BLOOM_PEAK
+        : 1 - (t - BLOOM_PEAK) / (BLOOM_END - BLOOM_PEAK);
+
+      // 1. Wide soft radial bloom
+      const r1 = 80 + t * 28;
+      const g1 = bx.createRadialGradient(CX, CY, 0, CX, CY, r1);
+      g1.addColorStop(0,   `rgba(220,255,240,${peakA * 0.95})`);
+      g1.addColorStop(0.15,`rgba(0,255,136,${peakA * 0.85})`);
+      g1.addColorStop(0.45,`rgba(0,255,136,${peakA * 0.35})`);
+      g1.addColorStop(1,   'rgba(0,255,136,0)');
+      bx.fillStyle = g1;
+      bx.fillRect(0, 0, bc.width, bc.height);
+
+      // 2. Horizontal lens flare — bright streak across title width
+      const flareA = peakA * 0.55;
+      const flareH = 4 + (1 - peakA) * 8;
+      const g2 = bx.createLinearGradient(0, CY, bc.width, CY);
+      g2.addColorStop(0,    'rgba(0,255,136,0)');
+      g2.addColorStop(0.3,  `rgba(0,255,136,${flareA * 0.4})`);
+      g2.addColorStop(0.5,  `rgba(220,255,240,${flareA})`);
+      g2.addColorStop(0.7,  `rgba(0,255,136,${flareA * 0.4})`);
+      g2.addColorStop(1,    'rgba(0,255,136,0)');
+      bx.fillStyle = g2;
+      bx.fillRect(0, CY - flareH / 2, bc.width, flareH);
+
+      // 3. Expanding thin ring
+      if (t > 4) {
+        const ringR = (t - 4) * 22;
+        const ringA = Math.max(0, peakA * 0.8 - (t - 4) * 0.018);
+        bx.beginPath(); bx.arc(CX, CY, ringR, 0, Math.PI * 2);
+        bx.strokeStyle = `rgba(0,255,136,${ringA})`;
+        bx.lineWidth = 2.5;
+        bx.shadowColor = '#00FF88'; bx.shadowBlur = 16;
+        bx.stroke();
+      }
+
+      bloomFrame++;
+      requestAnimationFrame(bloomLoop);
+    } else {
+      bx.clearRect(0, 0, bc.width, bc.height);
+    }
+  })();
+
+  // ─── Phase 2: Fire iris open on the title (slight delay for sync with bloom peak) ───
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      titleEl.classList.add('ignite');
+      // After ignition animation ends, switch to breathing glow
+      setTimeout(() => {
+        titleEl.classList.remove('ignite');
+        titleEl.style.clipPath = 'inset(0% 0 0% 0)';
+        titleEl.style.filter   = 'brightness(1) blur(0)';
+        titleEl.classList.add('settled');
+      }, 750);
+    });
+  });
+
+  // ─── Phase 3: Cascade — rule, subtitle, button ───
+  setTimeout(() => rule.classList.add('show'),  600);
+  setTimeout(() => sub.classList.add('show'),   900);
+  setTimeout(() => btn.classList.add('show'),  1200);
+}
+
+// ─── 5. Hand-off to React login page when Get Started is clicked ───
+window.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('ctaBtn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    // Play a subtle fade-out, then navigate into the SPA login route.
+    const root = document.getElementById('screen1');
+    if (root) root.classList.add('fade-to-app');
+    setTimeout(() => {
+      // App routes "/" → "/login", so either works. Go directly to login.
+      window.location.href = '/login';
+    }, 650);
+  });
+});
+</script>
+</body>
+</html>

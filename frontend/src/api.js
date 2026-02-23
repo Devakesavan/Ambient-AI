@@ -69,7 +69,9 @@ export async function mockTranscribe(consultationId) {
 
 export async function uploadAudio(consultationId, blob) {
   const formData = new FormData()
-  formData.append('file', blob, 'recording.webm')
+  // If it's a File object, use its name; otherwise use default for Blob
+  const filename = blob.name || 'recording.webm'
+  formData.append('file', blob, filename)
   const res = await fetch(`${API_BASE}/consultations/${consultationId}/audio`, { method: 'POST', headers: { Authorization: `Bearer ${getToken()}` }, body: formData })
   if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || 'Upload failed') }
   return res.json()
@@ -77,9 +79,14 @@ export async function uploadAudio(consultationId, blob) {
 
 export async function uploadTeachBackAnswerAllAudio(consultationId, blob) {
   const formData = new FormData()
-  formData.append('file', blob, 'teach-back-recording.webm')
+  const filename = blob.name || 'teach-back-recording.webm'
+  formData.append('file', blob, filename)
   const res = await fetch(`${API_BASE}/consultations/${consultationId}/teach-back/answer-all-audio`, { method: 'POST', headers: { Authorization: `Bearer ${getToken()}` }, body: formData })
-  if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error(err.detail || 'Failed to analyze') }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    const msg = Array.isArray(err.detail) ? err.detail.map((d) => d.msg || d).join(', ') : (err.detail || 'Failed to process teach-back audio.')
+    throw new Error(msg)
+  }
   return res.json()
 }
 
