@@ -5,20 +5,21 @@ Doctor-led, multilingual ambient AI for patient understanding.
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from config import settings
 from database import engine, get_db, Base
 from auth import get_current_user, hash_password, verify_password, create_token, RequireDoctor, RequirePatient, RequireAdmin
-from models import User, Consultation, Transcript, ClinicalReport, TeachBackItem, PatientReport
+from models import User, Consultation, Transcript, ClinicalReport, TeachBackItem, PatientReport, MedicalImage
 from schemas import (
     LoginRequest, TokenResponse, UserResponse, PatientCreate, ConsultationCreate,
-    ConsultationResponse, TranscriptResponse, ClinicalReportResponse, TeachBackItemResponse, PatientReportResponse,
+    ConsultationResponse, TranscriptResponse, ClinicalReportResponse, TeachBackItemResponse, PatientReportResponse, MedicalImageResponse,
 )
-from ai_service import transcribe_audio, extract_clinical_info, generate_teach_back_questions, compute_understanding_score, generate_patient_report, translate_text, translate_batch, extract_answer_for_question, extract_all_teach_back_answers
-from storage import save_audio, save_transcript
+from ai_service import transcribe_audio, extract_clinical_info, generate_teach_back_questions, compute_understanding_score, compute_overall_understanding_score, generate_patient_report, translate_text, translate_batch, extract_answer_for_question, extract_all_teach_back_answers
+from storage import save_audio, save_transcript, save_medical_image, get_image_path, save_signature, get_signature_path
 from datetime import datetime
 
 
@@ -165,12 +166,34 @@ def _consultation_response(c: Consultation, db: Session, language: str = "en") -
         )
         for t in tbi
     ]
+    
+    # Get medical images
+    images = db.query(MedicalImage).filter(MedicalImage.consultation_id == c.id).order_by(MedicalImage.created_at).all()
+    image_responses = [
+        MedicalImageResponse(
+            id=img.id, consultation_id=img.consultation_id,
+            filename=img.filename, original_filename=img.original_filename,
+            image_type=img.image_type, description=img.description,
+            created_at=img.created_at,
+        )
+        for img in images
+    ]
+    
+    # Get doctor and patient info
+    doctor = db.query(User).filter(User.id == c.doctor_id).first()
+    patient = db.query(User).filter(User.id == c.patient_id).first()
+    
     return ConsultationResponse(
         id=c.id, doctor_id=c.doctor_id, patient_id=c.patient_id, status=c.status,
+        overall_understanding_score=c.overall_understanding_score,
         created_at=c.created_at, completed_at=c.completed_at,
+        doctor_name=doctor.full_name if doctor else None,
+        doctor_signature_filename=doctor.signature_filename if doctor else None,
+        patient_name=patient.full_name if patient else None,
         transcript=transcript_data, clinical_report=clinical_data,
         teach_back_items=teach_back_responses,
         patient_report=patient_report_data,
+        medical_images=image_responses,
     )
 
 
@@ -353,6 +376,13 @@ def teach_back_answer_all_audio(consultation_id: int, file: UploadFile = File(..
         tb.patient_answer = answer or ""
         tb.understanding_score = compute_understanding_score(tb.question or "", answer or "", correct_info)
         print(f"[Teach-Back] Q{idx+1}: {tb.question[:50]}... -> A: {answer[:80] if answer else 'No answer'}... Score: {tb.understanding_score}")
+    
+    # Compute holistic overall score using Gemini
+    per_scores = [tb.understanding_score or 0 for tb in items]
+    overall = compute_overall_understanding_score(questions, answers, per_scores, correct_info)
+    c.overall_understanding_score = overall
+    print(f"[Teach-Back] Overall Understanding Score (Gemini): {overall}/100")
+    
     db.commit()
     return {"status": "ok"}
 
@@ -392,6 +422,151 @@ def complete_consultation_endpoint(consultation_id: int, db: Session = Depends(g
 def patient_visits(language: str = "en", db: Session = Depends(get_db), patient: User = Depends(RequirePatient)):
     consultations = db.query(Consultation).filter(Consultation.patient_id == patient.id).order_by(Consultation.created_at.desc()).all()
     return [_consultation_response(c, db, language=language) for c in consultations]
+
+
+# ── Medical Image Endpoints ─────────────────────────────────────────────────
+
+@app.post("/consultations/{consultation_id}/images")
+def upload_medical_image(
+    consultation_id: int,
+    file: UploadFile = File(...),
+    image_type: str = Form(default="other"),
+    description: str = Form(default=""),
+    db: Session = Depends(get_db),
+    doctor: User = Depends(RequireDoctor)
+):
+    """Upload a medical image (X-ray, injury photo, etc.) for a consultation."""
+    c = db.query(Consultation).filter(Consultation.id == consultation_id, Consultation.doctor_id == doctor.id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp", "image/bmp"]
+    if file.content_type and file.content_type.lower() not in allowed_types:
+        raise HTTPException(status_code=400, detail="Invalid file type. Only images (JPEG, PNG, GIF, WebP, BMP) are allowed.")
+    
+    # Read and save image
+    image_bytes = file.file.read()
+    if len(image_bytes) > 10 * 1024 * 1024:  # 10MB limit
+        raise HTTPException(status_code=400, detail="Image too large. Maximum size is 10MB.")
+    
+    stored_filename, filepath = save_medical_image(consultation_id, file.filename or "image.jpg", image_bytes)
+    
+    # Save to database
+    img = MedicalImage(
+        consultation_id=consultation_id,
+        filename=stored_filename,
+        original_filename=file.filename,
+        image_type=image_type,
+        description=description,
+        file_path=filepath,
+    )
+    db.add(img)
+    db.commit()
+    db.refresh(img)
+    
+    return {"id": img.id, "filename": stored_filename, "status": "uploaded"}
+
+
+@app.get("/images/{filename}")
+def serve_image(filename: str, token: str = None, db: Session = Depends(get_db)):
+    """Serve a medical image file. Accepts token via query parameter since <img> tags can't send headers."""
+    from auth import decode_token as _decode_token
+    import os
+    
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    payload = _decode_token(token)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    
+    # Find the image in database
+    img = db.query(MedicalImage).filter(MedicalImage.filename == filename).first()
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # Check access: user must be the doctor or patient of this consultation
+    c = db.query(Consultation).filter(Consultation.id == img.consultation_id).first()
+    if not c:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    
+    if user.role not in ("admin",) and user.id not in (c.doctor_id, c.patient_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    filepath = get_image_path(filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Image file not found")
+    
+    # Detect content type from extension
+    ext = os.path.splitext(filename)[1].lower()
+    media_types = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp'}
+    media_type = media_types.get(ext, 'image/jpeg')
+    
+    return FileResponse(filepath, media_type=media_type)
+
+
+@app.delete("/images/{image_id}")
+def delete_medical_image(image_id: int, db: Session = Depends(get_db), doctor: User = Depends(RequireDoctor)):
+    """Delete a medical image."""
+    img = db.query(MedicalImage).filter(MedicalImage.id == image_id).first()
+    if not img:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # Check ownership
+    c = db.query(Consultation).filter(Consultation.id == img.consultation_id, Consultation.doctor_id == doctor.id).first()
+    if not c:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Delete file
+    import os
+    if os.path.exists(img.file_path):
+        os.remove(img.file_path)
+    
+    db.delete(img)
+    db.commit()
+    return {"status": "deleted"}
+
+
+# ── E-Signature endpoints ──────────────────────────────────────────────────────
+
+@app.post("/doctor/signature")
+async def upload_signature(file: UploadFile = File(...), db: Session = Depends(get_db), doctor: User = Depends(RequireDoctor)):
+    """Upload or replace the doctor's e-signature image."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are allowed for signatures.")
+    image_bytes = await file.read()
+    if len(image_bytes) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Signature image must be under 5MB.")
+    stored_filename = save_signature(doctor.id, file.filename or "signature.png", image_bytes)
+    doctor.signature_filename = stored_filename
+    db.commit()
+    return {"status": "ok", "filename": stored_filename}
+
+
+@app.get("/signatures/{filename}")
+def serve_signature(filename: str, token: str = None):
+    """Serve a signature image. Accepts token via query parameter."""
+    import os
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from auth import decode_token as _decode_token
+    payload = _decode_token(token)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    filepath = get_signature_path(filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Signature not found")
+    
+    ext = os.path.splitext(filename)[1].lower()
+    media_types = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp'}
+    media_type = media_types.get(ext, 'image/png')
+    return FileResponse(filepath, media_type=media_type)
 
 
 if __name__ == "__main__":

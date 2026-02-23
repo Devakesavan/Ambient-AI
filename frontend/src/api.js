@@ -107,3 +107,56 @@ export async function patientVisits(language = 'en') {
   if (!res.ok) throw new Error('Failed to fetch visits')
   return res.json()
 }
+
+// Medical Image APIs
+export async function uploadMedicalImage(consultationId, file, imageType = 'other', description = '') {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('image_type', imageType)
+  formData.append('description', description)
+  const res = await fetch(`${API_BASE}/consultations/${consultationId}/images`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: formData
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to upload image')
+  }
+  return res.json()
+}
+
+export async function deleteMedicalImage(imageId) {
+  const res = await fetch(`${API_BASE}/images/${imageId}`, {
+    method: 'DELETE',
+    headers: getHeaders()
+  })
+  if (!res.ok) throw new Error('Failed to delete image')
+  return res.json()
+}
+
+export function getImageUrl(filename) {
+  const token = getToken()
+  return `${API_BASE}/images/${filename}?token=${encodeURIComponent(token)}`
+}
+
+// Signature APIs
+export async function uploadSignature(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(`${API_BASE}/doctor/signature`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${getToken()}` },
+    body: formData
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to upload signature')
+  }
+  return res.json()
+}
+
+export function getSignatureUrl(filename) {
+  const token = getToken()
+  return `${API_BASE}/signatures/${filename}?token=${encodeURIComponent(token)}`
+}

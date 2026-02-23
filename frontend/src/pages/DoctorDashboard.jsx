@@ -1,7 +1,17 @@
 import { useState, useEffect } from 'react'
-import { listPatients, createConsultation, getConsultation, uploadAudio, mockTranscribe, uploadTeachBackAnswerAllAudio, generatePatientReport, completeConsultation, listConsultations } from '../api'
+import { listPatients, createConsultation, getConsultation, uploadAudio, mockTranscribe, uploadTeachBackAnswerAllAudio, generatePatientReport, completeConsultation, listConsultations, uploadMedicalImage, deleteMedicalImage, getImageUrl, uploadSignature, getSignatureUrl } from '../api'
 import AudioRecorder from '../components/AudioRecorder'
 import { downloadReportPDF } from '../components/DownloadReportPDF'
+
+const IMAGE_TYPES = [
+  { value: 'xray', label: 'X-Ray' },
+  { value: 'scan', label: 'CT/MRI Scan' },
+  { value: 'injury', label: 'Injury Photo' },
+  { value: 'burn', label: 'Burn' },
+  { value: 'skin', label: 'Skin Condition' },
+  { value: 'wound', label: 'Wound' },
+  { value: 'other', label: 'Other' },
+]
 
 export default function DoctorDashboard() {
   const [patients, setPatients] = useState([])
@@ -16,6 +26,10 @@ export default function DoctorDashboard() {
   const [patientSortBy, setPatientSortBy] = useState('name')
   const [viewLanguage, setViewLanguage] = useState('en')
   const [languageLoading, setLanguageLoading] = useState(false)
+  const [imageUploadType, setImageUploadType] = useState('xray')
+  const [imageDescription, setImageDescription] = useState('')
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const [uploadingSignature, setUploadingSignature] = useState(false)
 
   const loadPatients = async () => { try { setPatients(await listPatients()) } catch (e) { setError('Failed to load patients') } }
   const loadConsultations = async () => { try { setConsultations(await listConsultations(null, viewLanguage)) } catch (e) { setError('Failed to load consultations') } }
@@ -145,6 +159,61 @@ export default function DoctorDashboard() {
     finally { setLoading(false) }
   }
 
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file || !currentConsultation) return
+    
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'image/bmp']
+    if (!validTypes.includes(file.type) && !file.name.match(/\.(jpg|jpeg|png|gif|webp|bmp)$/i)) {
+      setError('Please upload a valid image file (JPEG, PNG, GIF, WebP, or BMP)')
+      return
+    }
+    
+    setUploadingImage(true)
+    setError('')
+    try {
+      await uploadMedicalImage(currentConsultation.id, file, imageUploadType, imageDescription)
+      setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
+      setImageDescription('')
+    } catch (e) {
+      setError(e.message || 'Failed to upload image')
+    } finally {
+      setUploadingImage(false)
+      e.target.value = ''
+    }
+  }
+
+  const handleDeleteImage = async (imageId) => {
+    if (!confirm('Delete this image?')) return
+    setLoading(true)
+    try {
+      await deleteMedicalImage(imageId)
+      setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
+    } catch (e) {
+      setError(e.message || 'Failed to delete image')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSignatureUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingSignature(true)
+    setError('')
+    try {
+      await uploadSignature(file)
+      if (currentConsultation) {
+        setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
+      }
+    } catch (e) {
+      setError(e.message || 'Failed to upload signature')
+    } finally {
+      setUploadingSignature(false)
+      e.target.value = ''
+    }
+  }
+
   const langName = viewLanguage === 'ta' ? 'Tamil' : viewLanguage === 'hi' ? 'Hindi' : 'English'
 
   return (
@@ -240,6 +309,84 @@ export default function DoctorDashboard() {
                     </div>
                   </div>
                 )}
+                
+                {/* Medical Images Section */}
+                <div className="p-5 rounded-xl bg-blue-50/80 border border-blue-100">
+                  <h3 className="font-semibold text-blue-900 mb-3">Medical Images</h3>
+                  <p className="text-sm text-blue-700 mb-4">Upload X-rays, injury photos, or other medical images for this consultation.</p>
+                  
+                  {/* Upload Form */}
+                  <div className="flex flex-wrap gap-3 items-end mb-4">
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-blue-700">Image Type</label>
+                      <select 
+                        value={imageUploadType} 
+                        onChange={(e) => setImageUploadType(e.target.value)}
+                        className="px-3 py-2 rounded-lg border border-blue-200 bg-white text-sm"
+                      >
+                        {IMAGE_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1 flex-1 min-w-[200px]">
+                      <label className="text-xs font-medium text-blue-700">Description (optional)</label>
+                      <input 
+                        type="text" 
+                        value={imageDescription}
+                        onChange={(e) => setImageDescription(e.target.value)}
+                        placeholder="e.g., Left arm X-ray, Front view"
+                        className="px-3 py-2 rounded-lg border border-blue-200 bg-white text-sm"
+                      />
+                    </div>
+                    <label className={`relative px-4 py-2.5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 cursor-pointer transition-all flex items-center gap-2 ${uploadingImage || loading ? 'opacity-50 pointer-events-none' : ''}`}>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                      {uploadingImage ? 'Uploading...' : 'Upload Image'}
+                      <input 
+                        type="file" 
+                        accept="image/*,.jpg,.jpeg,.png,.gif,.webp,.bmp"
+                        onChange={handleImageUpload}
+                        disabled={uploadingImage || loading}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      />
+                    </label>
+                  </div>
+                  
+                  {/* Uploaded Images Grid */}
+                  {currentConsultation.medical_images?.length > 0 && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mt-4">
+                      {currentConsultation.medical_images.map((img) => (
+                        <div key={img.id} className="relative group">
+                          <div className="aspect-square rounded-lg overflow-hidden bg-white border border-blue-200 shadow-sm">
+                            <img 
+                              src={getImageUrl(img.filename)} 
+                              alt={img.description || img.image_type || 'Medical image'}
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
+                          <div className="mt-1">
+                            <span className="text-xs font-medium text-blue-600 uppercase">{img.image_type || 'Image'}</span>
+                            {img.description && <p className="text-xs text-slate-600 truncate">{img.description}</p>}
+                          </div>
+                          <button 
+                            onClick={() => handleDeleteImage(img.id)}
+                            className="absolute top-1 right-1 p-1.5 rounded-full bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600"
+                            title="Delete image"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {(!currentConsultation.medical_images || currentConsultation.medical_images.length === 0) && (
+                    <p className="text-sm text-blue-600 italic">No images uploaded yet.</p>
+                  )}
+                </div>
+                
                 {currentConsultation.teach_back_items?.length > 0 && (
                   <div className="p-5 rounded-xl bg-accent-50/80 border border-accent-100">
                     <h3 className="font-semibold text-accent-900 mb-2">Teach-Back Questions</h3>
@@ -265,25 +412,32 @@ export default function DoctorDashboard() {
                       </div>
                     )}
                     {(() => {
-                      const scores = currentConsultation.teach_back_items.filter((tb) => tb.understanding_score != null).map((tb) => tb.understanding_score)
-                      const overallScore = scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null
+                      const overallScore = currentConsultation.overall_understanding_score
                       return (
                         <>
                           {overallScore != null && (
                             <div className="mb-4 p-4 rounded-xl bg-white border-2 border-accent-200">
                               <span className="font-semibold text-accent-900">Overall Understanding Score: </span>
-                              <span className={`font-bold text-xl ${overallScore >= 80 ? 'text-green-600' : 'text-accent-600'}`}>{overallScore}/100</span>
+                              <span className={`font-bold text-xl ${overallScore >= 80 ? 'text-green-600' : overallScore >= 60 ? 'text-yellow-600' : 'text-red-600'}`}>{overallScore}/100</span>
                             </div>
                           )}
                           <div className="space-y-3">
-                            {currentConsultation.teach_back_items.map((tb) => (
+                            {currentConsultation.teach_back_items.map((tb, idx) => (
                               <div key={tb.id} className="p-4 rounded-xl bg-white border border-accent-100">
-                                <p className="font-medium text-slate-800">{tb.question}</p>
+                                <div className="flex justify-between items-start gap-3">
+                                  <p className="font-medium text-slate-800 flex-1">Q{idx + 1}: {tb.question}</p>
+                                  {tb.understanding_score != null && (
+                                    <span className={`shrink-0 px-3 py-1 rounded-lg text-sm font-bold ${tb.understanding_score >= 80 ? 'bg-green-100 text-green-700' : tb.understanding_score >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                                      {tb.understanding_score}/100
+                                    </span>
+                                  )}
+                                </div>
                                 {tb.patient_answer != null && tb.patient_answer !== '' && (
-                                  <p className="mt-2 text-slate-600 text-sm">
-                                    <span className="font-medium text-slate-700">Patient: </span>
-                                    {tb.patient_answer}
-                                  </p>
+                                  <div className="mt-3 p-3 rounded-lg bg-slate-50 border border-slate-200">
+                                    <p className="text-slate-700 text-sm">
+                                      {tb.patient_answer}
+                                    </p>
+                                  </div>
                                 )}
                               </div>
                             ))}
@@ -300,14 +454,129 @@ export default function DoctorDashboard() {
                         Generate Patient Report
                       </button>
                     ) : (
-                      <div className="flex-1 p-5 rounded-xl bg-primary-50/80 border border-primary-100">
-                        <div className="flex justify-between items-center mb-3">
-                          <h3 className="font-semibold text-primary-900">Patient Take-Home Report</h3>
-                          <button onClick={() => downloadReportPDF(currentConsultation.patient_report.content, `Patient-Report-Visit-${currentConsultation.id}.pdf`)} className="px-4 py-2 rounded-xl bg-primary-600 text-white text-sm font-medium hover:bg-primary-700">
-                            Download PDF
-                          </button>
+                      <div className="flex-1">
+                        {/* Structured Patient Report Card */}
+                        <div className="rounded-2xl border border-primary-200 bg-white shadow-sm overflow-hidden">
+                          {/* Report Header */}
+                          <div className="bg-gradient-to-r from-primary-600 to-primary-700 px-6 py-4">
+                            <div className="flex justify-between items-center">
+                              <div>
+                                <h3 className="text-white font-bold text-lg">Patient Take-Home Report</h3>
+                                <p className="text-primary-100 text-sm mt-0.5">Consultation #{currentConsultation.id} — {new Date(currentConsultation.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                              </div>
+                              <button onClick={() => downloadReportPDF(currentConsultation, getSignatureUrl, 'en')} className="px-4 py-2 rounded-lg bg-white/20 text-white text-sm font-medium hover:bg-white/30 backdrop-blur-sm flex items-center gap-2">
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                Download PDF
+                              </button>
+                            </div>
+                          </div>
+                          
+                          {/* Patient & Doctor Info */}
+                          <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+                            <div className="grid grid-cols-2 gap-6">
+                              <div>
+                                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Patient</span>
+                                <p className="text-slate-800 font-medium">{currentConsultation.patient_name || `Patient #${currentConsultation.patient_id}`}</p>
+                              </div>
+                              <div>
+                                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Consulting Doctor</span>
+                                <p className="text-slate-800 font-medium">{(currentConsultation.doctor_name || 'N/A').startsWith('Dr') ? currentConsultation.doctor_name : `Dr. ${currentConsultation.doctor_name || 'N/A'}`}</p>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Report Body */}
+                          <div className="px-6 py-5 space-y-5">
+                            {/* Diagnosis */}
+                            {currentConsultation.patient_report.diagnosis_summary && (
+                              <div>
+                                <h4 className="text-sm font-bold text-primary-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                  Diagnosis Summary
+                                </h4>
+                                <p className="text-slate-700 leading-relaxed pl-6">{currentConsultation.patient_report.diagnosis_summary}</p>
+                              </div>
+                            )}
+
+                            {/* Medications */}
+                            {currentConsultation.patient_report.medication_instructions && (
+                              <div>
+                                <h4 className="text-sm font-bold text-blue-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+                                  Medication Instructions
+                                </h4>
+                                <div className="pl-6 text-slate-700 leading-relaxed whitespace-pre-wrap">{currentConsultation.patient_report.medication_instructions}</div>
+                              </div>
+                            )}
+
+                            {/* Warning Signs */}
+                            {currentConsultation.patient_report.warning_signs && (
+                              <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                                <h4 className="text-sm font-bold text-red-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                                  Warning Signs — Seek Immediate Help If:
+                                </h4>
+                                <div className="pl-6 text-red-800 leading-relaxed whitespace-pre-wrap">{currentConsultation.patient_report.warning_signs}</div>
+                              </div>
+                            )}
+
+                            {/* Full Report Content */}
+                            {currentConsultation.patient_report.content && (
+                              <div>
+                                <h4 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-2">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h12" /></svg>
+                                  Detailed Instructions
+                                </h4>
+                                <div className="pl-6 text-slate-700 text-sm leading-relaxed whitespace-pre-wrap max-h-52 overflow-y-auto scrollbar-thin">{currentConsultation.patient_report.content}</div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Signature & Footer */}
+                          <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/30">
+                            <div className="flex justify-between items-end">
+                              <div className="text-xs text-slate-400">
+                                <p>Report generated on {new Date(currentConsultation.patient_report.created_at).toLocaleString('en-IN')}</p>
+                                <p>Ambient AI Healthcare System</p>
+                              </div>
+                              <div className="text-right">
+                                {currentConsultation.doctor_signature_filename ? (
+                                  <div className="flex flex-col items-end">
+                                    <img 
+                                      src={getSignatureUrl(currentConsultation.doctor_signature_filename)} 
+                                      alt="Doctor's Signature" 
+                                      className="h-16 max-w-[200px] object-contain mb-1"
+                                    />
+                                    <div className="border-t border-slate-300 pt-1 min-w-[160px] text-center">
+                                      <p className="text-sm font-semibold text-slate-700">{(currentConsultation.doctor_name || 'N/A').startsWith('Dr') ? currentConsultation.doctor_name : `Dr. ${currentConsultation.doctor_name || 'N/A'}`}</p>
+                                      <p className="text-xs text-slate-500">Consulting Physician</p>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col items-end gap-2">
+                                    <p className="text-xs text-amber-600 italic">No signature uploaded</p>
+                                    <label className={`relative px-3 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs font-medium hover:bg-amber-100 cursor-pointer flex items-center gap-1.5 ${uploadingSignature ? 'opacity-50 pointer-events-none' : ''}`}>
+                                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                                      {uploadingSignature ? 'Uploading...' : 'Upload Signature'}
+                                      <input type="file" accept="image/*,.png,.jpg,.jpeg" onChange={handleSignatureUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                                    </label>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                        <pre className="text-sm text-slate-800 whitespace-pre-wrap scrollbar-thin max-h-48 overflow-y-auto rounded-lg p-4 bg-white/80">{currentConsultation.patient_report.content}</pre>
+
+                        {/* Signature Management (below report card) */}
+                        {currentConsultation.doctor_signature_filename && (
+                          <div className="mt-3 flex justify-end">
+                            <label className={`relative px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200 text-slate-600 text-xs font-medium hover:bg-slate-200 cursor-pointer flex items-center gap-1.5 ${uploadingSignature ? 'opacity-50 pointer-events-none' : ''}`}>
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                              {uploadingSignature ? 'Uploading...' : 'Replace Signature'}
+                              <input type="file" accept="image/*,.png,.jpg,.jpeg" onChange={handleSignatureUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                            </label>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

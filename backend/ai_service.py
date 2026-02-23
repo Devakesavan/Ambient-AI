@@ -82,7 +82,7 @@ def _get_gemini_model():
             HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
-        _gemini_model = genai.GenerativeModel("gemini-1.5-flash", safety_settings=safety_settings)
+        _gemini_model = genai.GenerativeModel("gemini-2.5-flash", safety_settings=safety_settings)
     return _gemini_model
 
 
@@ -216,8 +216,11 @@ def _gemini_generate(prompt: str, system_instruction: str = "") -> str:
                     part_text = getattr(parts[0], "text", None)
                     if part_text:
                         return part_text.strip()
-    except Exception:
-        pass
+            # Log blocked/filtered responses
+            if hasattr(response, 'prompt_feedback'):
+                print(f"[Gemini] Prompt feedback: {response.prompt_feedback}")
+    except Exception as e:
+        print(f"[Gemini] API error: {e}")
     return ""
 
 
@@ -730,24 +733,40 @@ Return ONLY a JSON array of exactly 3 strings, e.g. ["Question 1?", "Question 2?
     return MOCK_TEACH_BACK_QUESTIONS.copy()
 
 
+def _strip_speaker_labels(transcript: str) -> str:
+    """Remove Doctor:/Patient: labels from transcript so Gemini focuses on content, not labels."""
+    lines = []
+    for line in transcript.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Remove speaker prefix if present
+        for prefix in ("Doctor:", "Patient:", "doctor:", "patient:"):
+            if stripped.startswith(prefix):
+                stripped = stripped[len(prefix):].strip()
+                break
+        if stripped:
+            lines.append(stripped)
+    return "\n".join(lines)
+
+
 def extract_all_teach_back_answers(questions: List[str], full_transcript: str, original_clinical_report: Dict[str, str] = None) -> List[str]:
-    """Extract all teach-back answers with intelligent context matching."""
+    """Extract all teach-back answers with intelligent content matching and summarization."""
     if not questions:
         return []
     
     print(f"\n[Teach-Back Extraction] Processing {len(questions)} questions...")
     print(f"[Teach-Back Extraction] Transcript length: {len(full_transcript)} chars")
     
+    # Strip speaker labels — diarization is unreliable and confuses extraction
+    clean_transcript = _strip_speaker_labels(full_transcript)
+    print(f"[Teach-Back Extraction] Cleaned transcript (no labels):\n{clean_transcript[:300]}...")
+    
     if not _use_gemini():
-        # Fallback: split transcript by patient lines
-        patient_answers = []
-        for line in full_transcript.split("\n"):
-            if "patient:" in line.lower():
-                parts = line.split(":", 1)
-                answer = parts[1].strip() if len(parts) > 1 else line.strip()
-                if answer:
-                    patient_answers.append(answer)
-        # Pad with empty strings if needed
+        # Fallback: split transcript by sentences
+        sentences = [s.strip() for s in re.split(r'[.!?]+', clean_transcript) if s.strip()]
+        # Even-indexed sentences are likely doctor questions, odd-indexed are patient answers
+        patient_answers = [f"Patient responded: {s}" for i, s in enumerate(sentences) if i % 2 == 1]
         while len(patient_answers) < len(questions):
             patient_answers.append("")
         return patient_answers[:len(questions)]
@@ -763,59 +782,44 @@ def extract_all_teach_back_answers(questions: List[str], full_transcript: str, o
 - Medications: {original_clinical_report.get('medications', 'N/A')}
 - Follow-up: {original_clinical_report.get('follow_up', 'N/A')}"""
     
-    prompt = f"""You are an intelligent medical AI analyzing a teach-back session where a doctor verifies patient understanding.
+    prompt = f"""You are analyzing a teach-back conversation where a doctor asks questions to verify a patient's understanding of their treatment.
 
-TEACH-BACK QUESTIONS ASKED:
+TEACH-BACK QUESTIONS ASKED BY THE DOCTOR:
 {questions_formatted}
 {clinical_context}
 
-PATIENT'S RECORDED RESPONSES:
-{full_transcript[:6000]}
+FULL CONVERSATION (speaker labels removed — figure out who said what from CONTEXT):
+{clean_transcript[:6000]}
 
-TASK: Extract the patient's answer for EACH question with high precision.
+IMPORTANT: The above text has NO speaker labels because the automatic labeling was unreliable.
+Use CONTEXT to determine what the patient said vs what the doctor said:
+- Doctor's lines: questions, confirmations like "Good", "Correct", prompts like "Now tell me..."
+- Patient's lines: answers about medications, dosages, timing, symptoms, follow-up instructions
 
-INTELLIGENT MATCHING RULES:
+TASK: For each teach-back question, find and summarize what the PATIENT said in response.
 
-1. CONTENT-BASED MATCHING (not just sequence):
-   - Match answers to questions based on CONTENT, not order
-   - If Q1 asks about medications, find where patient mentions medications/tablets/dosage
-   - If Q2 asks about follow-up, find where patient mentions timing/returning/appointments
-   - If Q3 asks about warning signs, find where patient mentions symptoms/emergency/danger signs
+RULES:
+1. MATCH BY CONTENT — find where the patient talks about the topic of each question:
+   - Medication question → find mentions of drug names, dosages, frequency, duration
+   - Follow-up question → find mentions of when to return, conditions for returning
+   - Warning signs question → find mentions of emergency symptoms, when to seek help
 
-2. MEDICATION QUESTIONS - Look for:
-   - Drug names (Paracetamol, Amoxicillin, etc.)
-   - Dosages (500mg, 2 tablets, etc.)
-   - Timing (after food, morning, night, twice daily, etc.)
-   - Duration (5 days, 1 week, etc.)
+2. FORMAT each answer as: "Patient responded: [concise 1-2 sentence summary]"
+   Examples:
+   - "Patient responded: Will take fluticasone inhaler, two puffs twice a day for ten days."
+   - "Patient responded: Should come back if fever returns or breathing gets worse."
+   - "Patient responded: Will return immediately if trouble breathing, cough worsens, or fever comes back."
 
-3. FOLLOW-UP QUESTIONS - Look for:
-   - Time references (1 week, 5 days, Monday, etc.)
-   - Return instructions (come back, visit again, etc.)
-   - Appointment mentions
-
-4. WARNING SIGN QUESTIONS - Look for:
-   - Emergency symptoms (breathing difficulty, high fever, etc.)
-   - When to return immediately
-   - Danger indicators
-
-5. LANGUAGE HANDLING:
-   - Preserve original language (English, Tamil, or mixed)
-   - Do NOT translate the answers
-   - Understand meaning across languages for matching
-
-6. COMPLETE EXTRACTION:
-   - Extract the FULL answer, not just keywords
-   - Include all relevant parts of what patient said
-   - If patient gave a detailed response, capture it fully
+3. Only write "Patient did not address this question." if the topic is truly NEVER mentioned.
 
 Return a JSON array with exactly {len(questions)} strings:
-["full answer to Q1", "full answer to Q2", "full answer to Q3"]
+["Patient responded: ...", "Patient responded: ...", "Patient responded: ..."]
 
-If patient did not answer a specific question, use empty string "".
-Return ONLY the JSON array, no explanations."""
+Return ONLY the JSON array, no markdown, no explanation."""
 
     try:
         result = _gemini_generate(prompt)
+        print(f"[Teach-Back Extraction] Raw Gemini response: {result[:300] if result else '(empty)'}")
         if result:
             # Clean the response to extract JSON
             result = result.strip()
@@ -828,25 +832,41 @@ Return ONLY the JSON array, no explanations."""
             data = json.loads(result)
             if isinstance(data, list):
                 # Ensure we have the right number of answers
-                answers = [str(a).strip() if a else "" for a in data]
+                answers = []
+                for a in data:
+                    ans = str(a).strip() if a else ""
+                    # Ensure proper format
+                    if ans and not ans.lower().startswith("patient"):
+                        ans = f"Patient responded: {ans}"
+                    answers.append(ans)
+                    
                 while len(answers) < len(questions):
-                    answers.append("")
+                    answers.append("Patient did not address this question.")
                 
                 # Log extracted answers
-                print(f"\\n{'='*60}")
+                print(f"\n{'='*60}")
                 print(f"  TEACH-BACK ANSWERS EXTRACTED")
                 print(f"{'='*60}")
                 for i, (q, a) in enumerate(zip(questions, answers)):
                     q_short = q[:50] + "..." if len(q) > 50 else q
-                    a_short = a[:60] + "..." if len(a) > 60 else a
+                    a_short = a[:80] + "..." if len(a) > 80 else a
                     print(f"  Q{i+1}: {q_short}")
                     print(f"  A{i+1}: {a_short if a else '(No answer)'}")
                     print()
-                print(f"{'='*60}\\n")
+                print(f"{'='*60}\n")
                 
                 return answers[:len(questions)]
+            else:
+                print(f"[extract_all_teach_back_answers] Gemini returned non-list: {type(data)}")
+        else:
+            print("[extract_all_teach_back_answers] Gemini returned empty response")
+    except json.JSONDecodeError as e:
+        print(f"[extract_all_teach_back_answers] JSON parse error: {e}")
+        print(f"[extract_all_teach_back_answers] Raw result was: {result[:200] if result else '(none)'}")
     except Exception as e:
+        import traceback
         print(f"[extract_all_teach_back_answers] Error: {e}")
+        print(traceback.format_exc())
     
     # Fallback to sequential extraction
     print("[extract_all_teach_back_answers] Falling back to individual extraction")
@@ -854,36 +874,52 @@ Return ONLY the JSON array, no explanations."""
 
 
 def extract_answer_for_question(question: str, full_transcript: str) -> str:
-    """Extract the patient's specific answer to this question only, handling mixed Tamil-English."""
+    """Extract and summarize the patient's specific answer to this question only."""
     if not _use_gemini():
         return ""  # Avoid repeating full transcript for every question when AI is unavailable
 
-    prompt = f"""You are analyzing a doctor-patient conversation transcript. The conversation may be in English, Tamil, or a MIX of both languages.
+    # Strip speaker labels — diarization is unreliable
+    clean_transcript = _strip_speaker_labels(full_transcript)
+
+    prompt = f"""You are analyzing a doctor-patient teach-back conversation. The conversation may be in English, Tamil, or a MIX of both.
 
 DOCTOR'S QUESTION:
 "{question}"
 
-FULL CONVERSATION TRANSCRIPT:
-{full_transcript[:4000]}
+FULL CONVERSATION (speaker labels removed because they were unreliable):
+{clean_transcript[:4000]}
 
-Extract ONLY the patient's direct answer to this specific question.
+IMPORTANT: There are NO speaker labels. Use CONTEXT to figure out which parts are the patient speaking:
+- Doctor says: questions, confirmations ("Good", "Correct"), prompts
+- Patient says: answers about medications, dosages, timing, symptoms, when to return
 
-CRITICAL INSTRUCTIONS:
-- Look for the patient's response (marked with "Patient:" or the patient's statement) that directly addresses this question
-- Include ONLY the answer to THIS question, not the whole conversation or answers to other questions
-- Include the complete answer, even if it spans multiple sentences
-- PRESERVE the original language - if patient answered in Tamil, keep Tamil; if English, keep English; if mixed (Tamil+English), keep the mix
-- Preserve medical terminology exactly as spoken (keep English medical terms even in Tamil answers)
-- Do NOT translate - extract the answer in the language(s) it was spoken
+TASK: Find and SUMMARIZE what the patient said in response to the above question.
 
-Return ONLY the patient's answer text for this question, nothing else. If the patient didn't answer this question, return "No answer provided"."""
+INSTRUCTIONS:
+1. Find the part of the conversation where someone ANSWERS this question (that's the patient)
+2. Create a BRIEF SUMMARY (1-2 sentences)
+3. Start your response with "Patient responded: "
+4. If patient answered correctly, summarize the key points
+5. If patient was confused, note that briefly
+
+EXAMPLES:
+- "Patient responded: Will take Paracetamol 500mg twice daily after food."
+- "Patient responded: Should return if symptoms don't improve in 5 days."
+- "Patient responded: Mentioned breathing difficulty as warning sign."
+- "Patient did not address this question."
+
+Return ONLY the summary line."""
     try:
         result = _gemini_generate(prompt)
-        if result and result.strip() and "no answer" not in result.lower():
-            return result.strip()[:800]  # Increased length for complete answers
-    except Exception:
-        pass
-    return ""  # Do not repeat full transcript for every question on failure
+        if result and result.strip():
+            response = result.strip()[:500]
+            # Ensure proper format
+            if not response.lower().startswith("patient"):
+                response = f"Patient responded: {response}"
+            return response
+    except Exception as e:
+        print(f"[extract_answer_for_question] Error: {e}")
+    return "Patient did not address this question."
 
 
 def compute_understanding_score(question: str, patient_answer: str, correct_info: str) -> int:
@@ -968,6 +1004,70 @@ Return ONLY a single integer score from 0-100, nothing else. No explanation, jus
     except Exception:
         pass
     return 75
+
+
+def compute_overall_understanding_score(
+    questions: list[str],
+    answers: list[str],
+    per_question_scores: list[int],
+    correct_info: str,
+) -> int:
+    """Have Gemini compute a holistic overall understanding score considering all Q&A together."""
+    if not questions or not any(answers):
+        return 0
+    if not _use_gemini():
+        # Fallback: simple average
+        valid = [s for s in per_question_scores if s is not None]
+        return round(sum(valid) / len(valid)) if valid else 0
+
+    qa_block = ""
+    for i, (q, a, s) in enumerate(zip(questions, answers, per_question_scores), 1):
+        qa_block += f"Q{i}: {q}\nPatient Answer: {a or '(no answer)'}\nPer-Question Score: {s}/100\n\n"
+
+    prompt = f"""You are a senior medical educator evaluating a patient's OVERALL understanding of their medical instructions using the teach-back method.
+
+CLINICAL INFORMATION (what the patient should know):
+{correct_info}
+
+TEACH-BACK QUESTIONS AND PATIENT RESPONSES:
+{qa_block}
+
+YOUR TASK:
+Evaluate the patient's OVERALL understanding holistically — not just an average of individual scores. Consider:
+
+1. **Critical Knowledge Gaps**: Did the patient miss any CRITICAL information (e.g., wrong medication dosage, missed warning signs)? A single dangerous gap should lower the overall score significantly.
+2. **Pattern of Understanding**: Does the patient show a consistent pattern of understanding, or is it scattered?
+3. **Safety Assessment**: Would this patient be SAFE to go home based on their demonstrated understanding?
+4. **Key Areas Coverage**:
+   - Medication understanding (names, dosage, frequency, duration)
+   - Follow-up plan awareness (when to return, what to watch for)
+   - Warning signs recognition (when to seek emergency care)
+5. **Coherence**: Do the answers together paint a picture of someone who understood the consultation, or someone who caught fragments?
+
+SCORING GUIDELINES:
+- 90-100: Patient demonstrates comprehensive understanding across ALL areas. Safe for discharge with confidence. No critical gaps.
+- 75-89: Good understanding overall with minor gaps. Safe for discharge. May need brief reinforcement on 1-2 points.
+- 60-74: Moderate understanding. Some important gaps exist. Would benefit from re-education before discharge.
+- 40-59: Limited understanding. Significant gaps in critical areas. Needs substantial re-education.
+- 20-39: Poor understanding. Multiple critical gaps. Not safe to discharge without thorough re-education.
+- 0-19: Minimal/no understanding demonstrated. Immediate re-education required.
+
+IMPORTANT: This is a HOLISTIC evaluation. A patient who gets one question perfectly (100) but completely fails two critical questions (0, 10) should NOT get 37 (average) — they should get lower because the gaps are dangerous. Conversely, a patient with consistent 70s showing solid partial understanding may deserve higher than 70 overall.
+
+Return ONLY a single integer score from 0-100. No explanation, just the number."""
+
+    try:
+        result = _gemini_generate(prompt)
+        if result:
+            cleaned = result.strip()
+            numbers = re.findall(r'\d+', cleaned)
+            if numbers:
+                return max(0, min(100, int(numbers[0])))
+    except Exception:
+        pass
+    # Fallback: weighted average
+    valid = [s for s in per_question_scores if s is not None]
+    return round(sum(valid) / len(valid)) if valid else 0
 
 
 def generate_patient_report(

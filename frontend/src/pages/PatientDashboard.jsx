@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { patientVisits } from '../api'
+import { patientVisits, getImageUrl, getSignatureUrl } from '../api'
 import { downloadReportPDF } from '../components/DownloadReportPDF'
 
 // Translations for patient dashboard UI
@@ -23,7 +23,10 @@ const translations = {
     understandingScore: 'Understanding Score',
     understandingDesc: 'Your doctor assessed your understanding during the visit.',
     noReports: 'No reports available for this visit yet.',
-    failedLoad: 'Failed to load visits'
+    failedLoad: 'Failed to load visits',
+    medicalImages: 'Medical Images',
+    medicalImagesDesc: 'X-rays, scans, and other medical images from your visit.',
+    noImages: 'No images available for this visit.'
   },
   ta: {
     visitHistory: 'உங்கள் வருகை வரலாறு',
@@ -44,7 +47,10 @@ const translations = {
     understandingScore: 'புரிதல் மதிப்பெண்',
     understandingDesc: 'உங்கள் மருத்துவர் வருகையின் போது உங்கள் புரிதலை மதிப்பிட்டார்.',
     noReports: 'இந்த வருகைக்கான அறிக்கைகள் இன்னும் கிடைக்கவில்லை.',
-    failedLoad: 'வருகைகளை ஏற்ற முடியவில்லை'
+    failedLoad: 'வருகைகளை ஏற்ற முடியவில்லை',
+    medicalImages: 'மருத்துவ படங்கள்',
+    medicalImagesDesc: 'உங்கள் வருகையின் எக்ஸ்-ரே, ஸ்கேன் மற்றும் பிற மருத்துவ படங்கள்.',
+    noImages: 'இந்த வருகைக்கு படங்கள் இல்லை.'
   },
   hi: {
     visitHistory: 'आपका दौरा इतिहास',
@@ -65,7 +71,10 @@ const translations = {
     understandingScore: 'समझ का स्कोर',
     understandingDesc: 'आपके डॉक्टर ने दौरे के दौरान आपकी समझ का मूल्यांकन किया।',
     noReports: 'इस दौरे के लिए अभी कोई रिपोर्ट उपलब्ध नहीं है।',
-    failedLoad: 'दौरे लोड करने में विफल'
+    failedLoad: 'दौरे लोड करने में विफल',
+    medicalImages: 'मेडिकल इमेज',
+    medicalImagesDesc: 'आपके दौरे की एक्स-रे, स्कैन और अन्य मेडिकल इमेज।',
+    noImages: 'इस दौरे के लिए कोई इमेज उपलब्ध नहीं है।'
   }
 }
 
@@ -193,20 +202,122 @@ export default function PatientDashboard() {
                     </div>
                   )}
                   {displayVisit.patient_report && (
-                    <div className="p-5 rounded-xl bg-primary-50/80 border border-primary-100">
-                      <div className="flex flex-wrap justify-between items-center gap-3 mb-3">
-                        <h3 className="font-semibold text-primary-900">{t.takeHomeReport}</h3>
-                        <button onClick={() => downloadReportPDF(displayVisit.patient_report.content, `Take-Home-Report-Visit-${displayVisit.id}.pdf`)} className="px-4 py-2 rounded-xl bg-primary-600 text-white text-sm font-medium hover:bg-primary-700">
-                          {t.downloadPdf}
-                        </button>
+                    <div className="rounded-2xl border border-primary-200 bg-white shadow-sm overflow-hidden">
+                      {/* Report Header */}
+                      <div className="bg-gradient-to-r from-primary-600 to-primary-700 px-6 py-4">
+                        <div className="flex justify-between items-center">
+                          <div>
+                            <h3 className="text-white font-bold text-lg">{t.takeHomeReport}</h3>
+                            <p className="text-primary-100 text-sm mt-0.5">{t.visit} #{displayVisit.id} — {new Date(displayVisit.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+                          </div>
+                          <button onClick={() => downloadReportPDF(displayVisit, getSignatureUrl, language)} className="px-4 py-2 rounded-lg bg-white/20 text-white text-sm font-medium hover:bg-white/30 backdrop-blur-sm flex items-center gap-2">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            {t.downloadPdf}
+                          </button>
+                        </div>
                       </div>
-                      <pre className="text-sm text-slate-800 whitespace-pre-wrap scrollbar-thin rounded-lg p-4 bg-white/80">{displayVisit.patient_report.content}</pre>
+
+                      {/* Patient & Doctor Info */}
+                      <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+                        <div className="grid grid-cols-2 gap-6">
+                          <div>
+                            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Patient</span>
+                            <p className="text-slate-800 font-medium">{displayVisit.patient_name || `Patient #${displayVisit.patient_id}`}</p>
+                          </div>
+                          <div>
+                            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Doctor</span>
+                            <p className="text-slate-800 font-medium">{(displayVisit.doctor_name || 'N/A').startsWith('Dr') ? displayVisit.doctor_name : `Dr. ${displayVisit.doctor_name || 'N/A'}`}</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Report Body */}
+                      <div className="px-6 py-5 space-y-5">
+                        {displayVisit.patient_report.diagnosis_summary && (
+                          <div>
+                            <h4 className="text-sm font-bold text-primary-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                              {t.diagnosis}
+                            </h4>
+                            <p className="text-slate-700 leading-relaxed pl-6">{displayVisit.patient_report.diagnosis_summary}</p>
+                          </div>
+                        )}
+
+                        {displayVisit.patient_report.medication_instructions && (
+                          <div>
+                            <h4 className="text-sm font-bold text-blue-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+                              {t.medications}
+                            </h4>
+                            <div className="pl-6 text-slate-700 leading-relaxed whitespace-pre-wrap">{displayVisit.patient_report.medication_instructions}</div>
+                          </div>
+                        )}
+
+                        {displayVisit.patient_report.warning_signs && (
+                          <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                            <h4 className="text-sm font-bold text-red-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                              Warning Signs
+                            </h4>
+                            <div className="pl-6 text-red-800 leading-relaxed whitespace-pre-wrap">{displayVisit.patient_report.warning_signs}</div>
+                          </div>
+                        )}
+
+                        {displayVisit.patient_report.content && (
+                          <div>
+                            <h4 className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-2">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h12" /></svg>
+                              Detailed Instructions
+                            </h4>
+                            <div className="pl-6 text-slate-700 text-sm leading-relaxed whitespace-pre-wrap">{displayVisit.patient_report.content}</div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Signature & Footer */}
+                      <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/30">
+                        <div className="flex justify-between items-end">
+                          <div className="text-xs text-slate-400">
+                            <p>Report generated on {new Date(displayVisit.patient_report.created_at).toLocaleString('en-IN')}</p>
+                            <p>Ambient AI Healthcare System</p>
+                          </div>
+                          <div className="text-right">
+                            {displayVisit.doctor_signature_filename && (
+                              <div className="flex flex-col items-end">
+                                <img 
+                                  src={getSignatureUrl(displayVisit.doctor_signature_filename)} 
+                                  alt="Doctor's Signature" 
+                                  className="h-16 max-w-[200px] object-contain mb-1"
+                                />
+                                <div className="border-t border-slate-300 pt-1 min-w-[160px] text-center">
+                                  <p className="text-sm font-semibold text-slate-700">{(displayVisit.doctor_name || 'N/A').startsWith('Dr') ? displayVisit.doctor_name : `Dr. ${displayVisit.doctor_name || 'N/A'}`}</p>
+                                  <p className="text-xs text-slate-500">Consulting Physician</p>
+                                </div>
+                              </div>
+                            )}
+                            {!displayVisit.doctor_signature_filename && (
+                              <div className="border-t border-slate-300 pt-1 min-w-[160px] text-center">
+                                <p className="text-sm font-semibold text-slate-700">{(displayVisit.doctor_name || 'N/A').startsWith('Dr') ? displayVisit.doctor_name : `Dr. ${displayVisit.doctor_name || 'N/A'}`}</p>
+                                <p className="text-xs text-slate-500">Consulting Physician</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
                   {displayVisit.teach_back_items?.some((tb) => tb.understanding_score != null) && (
                     <div className="p-5 rounded-xl bg-accent-50/80 border border-accent-100">
                       <h3 className="font-semibold text-accent-900 mb-1">{t.understandingScore}</h3>
                       <p className="text-sm text-accent-800 mb-3">{t.understandingDesc}</p>
+                      {displayVisit.overall_understanding_score != null && (
+                        <div className="mb-3 p-3 rounded-lg bg-white border-2 border-accent-200">
+                          <span className="font-semibold text-accent-900">{t.understandingScore}: </span>
+                          <span className={`font-bold text-lg ${displayVisit.overall_understanding_score >= 80 ? 'text-green-600' : displayVisit.overall_understanding_score >= 60 ? 'text-yellow-600' : 'text-red-600'}`}>
+                            {displayVisit.overall_understanding_score}/100
+                          </span>
+                        </div>
+                      )}
                       <div className="flex flex-wrap gap-4">
                         {displayVisit.teach_back_items.filter((tb) => tb.understanding_score != null).map((tb, i) => (
                           <span key={tb.id} className="px-3 py-1.5 rounded-lg bg-white border border-accent-200 text-sm font-medium">Q{i + 1}: {tb.understanding_score}/100</span>
@@ -214,7 +325,38 @@ export default function PatientDashboard() {
                       </div>
                     </div>
                   )}
-                  {!displayVisit.transcript && !displayVisit.clinical_report && !displayVisit.patient_report && (
+                  
+                  {/* Medical Images Section */}
+                  {displayVisit.medical_images?.length > 0 && (
+                    <div className="p-5 rounded-xl bg-blue-50/80 border border-blue-100">
+                      <h3 className="font-semibold text-blue-900 mb-2">{t.medicalImages}</h3>
+                      <p className="text-sm text-blue-700 mb-4">{t.medicalImagesDesc}</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                        {displayVisit.medical_images.map((img) => (
+                          <div key={img.id} className="group">
+                            <a 
+                              href={getImageUrl(img.filename)} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="block aspect-square rounded-lg overflow-hidden bg-white border border-blue-200 shadow-sm hover:shadow-md transition-shadow"
+                            >
+                              <img 
+                                src={getImageUrl(img.filename)} 
+                                alt={img.description || img.image_type || 'Medical image'}
+                                className="w-full h-full object-cover"
+                              />
+                            </a>
+                            <div className="mt-1">
+                              <span className="text-xs font-medium text-blue-600 uppercase">{img.image_type || 'Image'}</span>
+                              {img.description && <p className="text-xs text-slate-600 truncate">{img.description}</p>}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {!displayVisit.transcript && !displayVisit.clinical_report && !displayVisit.patient_report && !displayVisit.medical_images?.length && (
                     <div className="p-12 text-center text-slate-500">{t.noReports}</div>
                   )}
                 </>
