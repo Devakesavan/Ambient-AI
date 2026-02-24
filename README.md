@@ -112,51 +112,143 @@ Ambient-AI/
 
 ## Installation
 
-### 1. Clone the repository
+Follow these steps to run Ambient AI locally (without Docker).
+
+### Step 1 — Verify prerequisites
+
+Ensure you have the required tools installed:
+
+```bash
+# Python 3.10 or higher
+python --version
+
+# Node.js 18+ and npm
+node --version
+npm --version
+```
+
+- **Python:** Install from [python.org](https://www.python.org/downloads/) or your package manager. On Windows, tick "Add Python to PATH".
+- **Node.js:** Install from [nodejs.org](https://nodejs.org/) (LTS recommended).
+- **FFmpeg:** Required for Whisper. The backend can use `imageio-ffmpeg` (installed via `requirements.txt`); on some systems you may need to [install FFmpeg](https://ffmpeg.org/download.html) separately.
+
+### Step 2 — Clone the repository
 
 ```bash
 git clone https://github.com/Devakesavan/Ambient-AI.git
 cd Ambient-AI
 ```
 
-### 2. Backend (Python)
+### Step 3 — Backend setup
+
+**3.1 Create and activate a virtual environment**
 
 ```bash
 cd backend
 python -m venv venv
-# Windows: venv\Scripts\activate
-# macOS/Linux: source venv/bin/activate
+```
+
+Activate the virtual environment:
+
+- **Windows (Command Prompt):** `venv\Scripts\activate`
+- **Windows (PowerShell):** `venv\Scripts\Activate.ps1`
+- **macOS / Linux:** `source venv/bin/activate`
+
+You should see `(venv)` in your terminal prompt.
+
+**3.2 Install Python dependencies**
+
+```bash
 pip install -r requirements.txt
 ```
 
-Create a `.env` file in `backend/` (see [Configuration](#configuration)).
+**3.3 Create environment file**
 
-Run the API:
+Copy the example env file and edit as needed:
+
+```bash
+# From the backend/ directory (Windows CMD/PowerShell)
+copy ..\.env.example .env
+
+# From the backend/ directory (macOS / Linux)
+cp ../.env.example .env
+```
+
+Edit `.env` and set at least:
+
+- `SECRET_KEY` — use a long random string in production
+- `GEMINI_API_KEY` — optional but recommended for clinical extraction and translation (get from [Google AI Studio](https://aistudio.google.com/apikey))
+
+See [Configuration](#configuration) for all options.
+
+**3.4 Create the first admin (and optional doctor)**
+
+Run the seed script so you can log in:
+
+```bash
+python seed_admin.py
+```
+
+Follow the prompts, or ensure `ADMIN_EMAIL` and `ADMIN_PASSWORD` are set in `.env` so the script can create the admin user.
+
+**3.5 Start the backend**
 
 ```bash
 python main.py
-# Or: uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 3. Frontend (React)
+The API runs at **http://localhost:8000**. You should see a message that the server is running. Keep this terminal open.
 
-From the project root:
+### Step 4 — Frontend setup
+
+Open a **new terminal** and go to the project root, then into the frontend folder:
 
 ```bash
+cd Ambient-AI
 cd frontend
+```
+
+**4.1 Install Node dependencies**
+
+```bash
+npm install
+```
+
+**4.2 Start the frontend**
+
+```bash
+npm run dev
+```
+
+The app is served at **http://localhost:5173** (or the port Vite prints). The frontend is configured to call the backend at `http://localhost:8000`; if your backend runs elsewhere, update the API base URL in `frontend/src/api.js` (or via env if you add one).
+
+### Step 5 — Run backend and frontend together (optional)
+
+From the **project root** (not inside `backend/` or `frontend/`):
+
+```bash
 npm install
 npm run dev
 ```
 
-The app is typically available at `http://localhost:5173`. Ensure the backend URL in the frontend (e.g. in `api.js` or env) points to your backend (e.g. `http://localhost:8000`).
+This uses `concurrently` to start both the backend and the frontend in one command. Useful for daily development.
 
-### 4. Run both (from root)
+### Step 6 — Confirm installation
 
-```bash
-npm run dev
-```
+1. Open **http://localhost:5173** in your browser.
+2. You should see the Ambient AI landing page; click **Get Started** (or go to `/login`).
+3. Log in with the admin credentials you created with `seed_admin.py`.
+4. You should see the Admin dashboard and be able to create patients, or log in as a doctor if you created one.
 
-This uses `concurrently` to start backend and frontend together.
+**Summary**
+
+| Step | Command / action |
+|------|-------------------|
+| 1 | Check `python --version`, `node --version` |
+| 2 | `git clone ...` and `cd Ambient-AI` |
+| 3 | `cd backend` → `python -m venv venv` → activate venv → `pip install -r requirements.txt` → copy `.env.example` to `.env` → `python seed_admin.py` → `python main.py` |
+| 4 | New terminal: `cd frontend` → `npm install` → `npm run dev` |
+| 5 | (Optional) From root: `npm run dev` to run both |
+| 6 | Open http://localhost:5173 and log in |
 
 ---
 
