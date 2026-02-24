@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { listPatients, createConsultation, getConsultation, uploadAudio, mockTranscribe, uploadTeachBackAnswerAllAudio, generatePatientReport, completeConsultation, listConsultations, uploadMedicalImage, deleteMedicalImage, getImageUrl, uploadSignature, getSignatureUrl } from '../api'
 import AudioRecorder from '../components/AudioRecorder'
 import { downloadReportPDF } from '../components/DownloadReportPDF'
+import ECG3DLoader from '../components/ECG3DLoader'
 
 const IMAGE_TYPES = [
   { value: 'xray', label: 'X-Ray' },
@@ -18,7 +19,9 @@ export default function DoctorDashboard() {
   const [consultations, setConsultations] = useState([])
   const [currentConsultation, setCurrentConsultation] = useState(null)
   const [selectedPatientId, setSelectedPatientId] = useState(null)
-  const [loading, setLoading] = useState(false)
+  const [audioLoading, setAudioLoading] = useState(false)
+  const [teachbackLoading, setTeachbackLoading] = useState(false)
+  const [loading, setLoading] = useState(false) // for general UI, e.g. start consultation, etc.
   const [error, setError] = useState('')
   const [recordingTeachBack, setRecordingTeachBack] = useState(false)
   const [showPatientSelector, setShowPatientSelector] = useState(false)
@@ -70,17 +73,17 @@ export default function DoctorDashboard() {
 
   const handleRecordingComplete = async (blob) => {
     if (!currentConsultation) return
-    setLoading(true)
+    setAudioLoading(true)
     setError('')
     try {
       await uploadAudio(currentConsultation.id, blob)
       setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
     } catch (e) { setError(e.message) }
-    finally { setLoading(false) }
+    finally { setAudioLoading(false) }
   }
 
   const handleTeachBackRecordingComplete = async (blob) => {
-    setLoading(true)
+    setTeachbackLoading(true)
     setError('')
     setRecordingTeachBack(false)
     try {
@@ -88,7 +91,7 @@ export default function DoctorDashboard() {
       setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage))
     } catch (e) {
       setError(e.message || 'Teach-back processing failed. Try recording again or upload an audio file.')
-    } finally { setLoading(false) }
+    } finally { setTeachbackLoading(false) }
   }
 
   const handleTeachBackFileUpload = async (e) => {
@@ -99,7 +102,7 @@ export default function DoctorDashboard() {
       setError('Please upload a valid audio file (WAV, MP3, WebM, OGG, or M4A)')
       return
     }
-    setLoading(true)
+    setTeachbackLoading(true)
     setError('')
     try {
       await uploadTeachBackAnswerAllAudio(currentConsultation.id, file)
@@ -107,7 +110,7 @@ export default function DoctorDashboard() {
     } catch (e) {
       setError(e.message || 'Failed to process teach-back audio.')
     } finally {
-      setLoading(false)
+      setTeachbackLoading(false)
       e.target.value = ''
     }
   }
@@ -125,15 +128,13 @@ export default function DoctorDashboard() {
   const handleAudioUpload = async (e) => {
     const file = e.target.files?.[0]
     if (!file || !currentConsultation) return
-    
     // Validate file type
     const validTypes = ['audio/wav', 'audio/mp3', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/m4a', 'audio/x-m4a']
     if (!validTypes.includes(file.type) && !file.name.match(/\.(wav|mp3|webm|ogg|m4a)$/i)) {
       setError('Please upload a valid audio file (WAV, MP3, WebM, OGG, or M4A)')
       return
     }
-
-    setLoading(true)
+    setAudioLoading(true)
     setError('')
     try {
       await uploadAudio(currentConsultation.id, file)
@@ -141,7 +142,7 @@ export default function DoctorDashboard() {
     } catch (e) { 
       setError(e.message) 
     } finally { 
-      setLoading(false)
+      setAudioLoading(false)
       // Reset the file input
       e.target.value = ''
     }
@@ -267,27 +268,33 @@ export default function DoctorDashboard() {
                 <div className="p-5 rounded-xl bg-slate-50 border border-slate-100">
                   <h3 className="font-semibold text-slate-800 mb-1">Ambient AI Recording</h3>
                   <p className="text-sm text-slate-500 mb-4">Record the doctor-patient conversation, upload an audio file, or use sample data for demo.</p>
-                  <div className="flex gap-4 items-center flex-wrap">
-                    <AudioRecorder onRecordingComplete={handleRecordingComplete} disabled={loading} />
-                    
-                    {/* Upload Audio Button */}
-                    <label className={`relative px-4 py-2.5 rounded-xl border-2 border-teal-300 bg-teal-50 text-teal-800 text-sm font-medium hover:bg-teal-100 cursor-pointer transition-all flex items-center gap-2 ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                      </svg>
-                      Upload Audio
-                      <input 
-                        type="file" 
-                        accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a"
-                        onChange={handleAudioUpload}
-                        disabled={loading}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                      />
-                    </label>
-
-                    <button onClick={async () => { setLoading(true); setError(''); try { await mockTranscribe(currentConsultation.id); setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage)); } catch (e) { setError(e.message); } finally { setLoading(false); } }} disabled={loading} className="px-4 py-2.5 rounded-xl border-2 border-accent-300 bg-accent-50 text-accent-800 text-sm font-medium hover:bg-accent-100">
-                      Use Sample Data (Demo)
-                    </button>
+                  <div className="flex gap-4 items-center flex-wrap min-h-[100px]">
+                    {audioLoading ? (
+                      <div className="w-full flex justify-center items-center">
+                        <ECG3DLoader text="Processing audio..." />
+                      </div>
+                    ) : (
+                      <>
+                        <AudioRecorder onRecordingComplete={handleRecordingComplete} disabled={audioLoading || teachbackLoading || loading} />
+                        {/* Upload Audio Button */}
+                        <label className={`relative px-4 py-2.5 rounded-xl border-2 border-teal-300 bg-teal-50 text-teal-800 text-sm font-medium hover:bg-teal-100 cursor-pointer transition-all flex items-center gap-2 ${(audioLoading || teachbackLoading || loading) ? 'opacity-50 pointer-events-none' : ''}`}>
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                          </svg>
+                          Upload Audio
+                          <input 
+                            type="file" 
+                            accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a"
+                            onChange={handleAudioUpload}
+                            disabled={audioLoading || teachbackLoading || loading}
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                          />
+                        </label>
+                        <button onClick={async () => { setAudioLoading(true); setError(''); try { await mockTranscribe(currentConsultation.id); setCurrentConsultation(await getConsultation(currentConsultation.id, viewLanguage)); } catch (e) { setError(e.message); } finally { setAudioLoading(false); } }} disabled={audioLoading || teachbackLoading || loading} className="px-4 py-2.5 rounded-xl border-2 border-accent-300 bg-accent-50 text-accent-800 text-sm font-medium hover:bg-accent-100">
+                          Use Sample Data (Demo)
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
                 {currentConsultation.transcript && (
@@ -391,23 +398,27 @@ export default function DoctorDashboard() {
                   <div className="p-5 rounded-xl bg-accent-50/80 border border-accent-100">
                     <h3 className="font-semibold text-accent-900 mb-2">Teach-Back Questions</h3>
                     <p className="text-sm text-accent-800 mb-4">Click Record before asking. Ask all questions verbally, then stop.</p>
-                    {recordingTeachBack ? (
+                    {teachbackLoading ? (
+                      <div className="w-full flex justify-center items-center min-h-[100px]">
+                        <ECG3DLoader text="Processing teach-back..." />
+                      </div>
+                    ) : recordingTeachBack ? (
                       <div className="flex flex-col gap-3 p-5 bg-white rounded-xl border border-accent-200">
                         <span className="text-sm text-slate-600">Recording — ask all questions, then stop.</span>
-                        <AudioRecorder onRecordingComplete={handleTeachBackRecordingComplete} disabled={loading} />
+                        <AudioRecorder onRecordingComplete={handleTeachBackRecordingComplete} disabled={audioLoading || teachbackLoading || loading} />
                         <button onClick={() => setRecordingTeachBack(false)} className="text-sm text-slate-500 hover:text-slate-700 w-fit">Cancel</button>
                       </div>
                     ) : (
                       <div className="flex flex-wrap gap-3 items-center mb-4">
-                        <button onClick={() => setRecordingTeachBack(true)} disabled={loading} className="px-5 py-2.5 rounded-xl bg-primary-600 text-white font-semibold hover:bg-primary-700 disabled:opacity-50">
+                        <button onClick={() => setRecordingTeachBack(true)} disabled={audioLoading || teachbackLoading || loading} className="px-5 py-2.5 rounded-xl bg-primary-600 text-white font-semibold hover:bg-primary-700 disabled:opacity-50">
                           Start Recording (Ask Questions After)
                         </button>
-                        <label className={`relative px-4 py-2.5 rounded-xl border-2 border-teal-300 bg-teal-50 text-teal-800 text-sm font-medium hover:bg-teal-100 cursor-pointer transition-all flex items-center gap-2 ${loading ? 'opacity-50 pointer-events-none' : ''}`}>
+                        <label className={`relative px-4 py-2.5 rounded-xl border-2 border-teal-300 bg-teal-50 text-teal-800 text-sm font-medium hover:bg-teal-100 cursor-pointer transition-all flex items-center gap-2 ${(audioLoading || teachbackLoading || loading) ? 'opacity-50 pointer-events-none' : ''}`}>
                           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
                           </svg>
                           Upload teach-back audio
-                          <input type="file" accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a" onChange={handleTeachBackFileUpload} disabled={loading} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                          <input type="file" accept="audio/*,.wav,.mp3,.webm,.ogg,.m4a" onChange={handleTeachBackFileUpload} disabled={audioLoading || teachbackLoading || loading} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
                         </label>
                       </div>
                     )}

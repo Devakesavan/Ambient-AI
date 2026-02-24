@@ -287,14 +287,14 @@ export default function Login() {
                   </p>
                   <div className="mt-3 flex flex-wrap justify-center gap-2">
                     {[
-                      { email: 'doctor@ambient.ai', role: 'Doctor' },
-                      { email: 'patient1@ambient.ai', role: 'Patient' },
-                      { email: 'admin@ambient.ai', role: 'Admin' }
+                      { email: 'doctor@ambient.ai', password: 'doctor123', role: 'Doctor' },
+                      { email: 'patient1@ambient.ai', password: 'patient123', role: 'Patient' },
+                      { email: 'admin@ambient.ai', password: 'admin123', role: 'Admin' }
                     ].map((acc, i) => (
                       <button
                         key={i}
                         type="button"
-                        onClick={() => { setEmail(acc.email); setPassword('123') }}
+                        onClick={() => { setEmail(acc.email); setPassword(acc.password) }}
                         className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-teal-200/70 text-xs hover:bg-white/10 hover:text-white transition-all duration-200"
                       >
                         {acc.role}

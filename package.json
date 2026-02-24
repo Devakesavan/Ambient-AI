@@ -1,5 +1,11 @@
 {
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && python main.py",
+    "dev:frontend": "cd frontend && npm run dev"
+  },
   "devDependencies": {
+    "concurrently": "^8.2.2",
     "semver": "^7.7.4"
   }
 }

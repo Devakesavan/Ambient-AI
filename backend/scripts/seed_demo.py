@@ -14,18 +14,18 @@ def seed():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        if db.query(User).filter(User.email == "doctor@hospital.com").first():
+        if db.query(User).filter(User.email == "doctor@ambient.ai").first():
             print("Demo users already exist.")
             return
         users = [
-            User(email="doctor@hospital.com", hashed_password=hash_password("doctor123"), full_name="Dr. Smith", role="doctor"),
-            User(email="patient@demo.com", hashed_password=hash_password("patient123"), full_name="Kamalesh R", role="patient", preferred_language="en"),
-            User(email="admin@hospital.com", hashed_password=hash_password("admin123"), full_name="Admin User", role="admin"),
+            User(email="doctor@ambient.ai", hashed_password=hash_password("doctor123"), full_name="Dr. Smith", role="doctor"),
+            User(email="patient1@ambient.ai", hashed_password=hash_password("patient123"), full_name="Kamalesh R", role="patient", preferred_language="en"),
+            User(email="admin@ambient.ai", hashed_password=hash_password("admin123"), full_name="Admin User", role="admin"),
         ]
         for u in users:
             db.add(u)
         db.commit()
-        print("Demo users created: doctor@hospital.com/doctor123, patient@demo.com/patient123, admin@hospital.com/admin123")
+        print("Demo users created: doctor@ambient.ai/doctor123, patient1@ambient.ai/patient123, admin@ambient.ai/admin123")
     finally:
         db.close()
 
