@@ -270,6 +270,12 @@ Copy `.env.example` to `.env` (in `backend/` for local run, or in project root f
 See `.env.example` and `DOCKER.md` for a full list and Docker-specific notes.
 
 ---
+## Image
+
+![WhatsApp Image 2026-02-24 at 7 36 00 AM](https://github.com/user-attachments/assets/0fd4ec1b-2d67-4964-a587-6678222990f3)
+![WhatsApp Image 2026-02-24 at 7 33 56 AM](https://github.com/user-attachments/assets/eb111104-4b61-496f-a915-014f300a8700)
+<img width="2558" height="1390" alt="image" src="https://github.com/user-attachments/assets/8189ade6-45da-4190-bd68-8b2d6b489ea9" />
+<img width="2559" height="1403" alt="image" src="https://github.com/user-attachments/assets/1c174873-8d25-47ee-bacf-1401e4d8236f" />
 
 ## Usage
 
